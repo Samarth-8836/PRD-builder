@@ -124,6 +124,15 @@ export class FileStorage implements IStorage {
     return session;
   }
 
+  async setContractSnapshot(id: string, snapshot: string | null): Promise<Session> {
+    const session = await this.requireSession(id);
+    if (snapshot === null) delete session.contractSnapshot;
+    else session.contractSnapshot = snapshot;
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
   private pathFor(id: string): string {
     return path.join(this.root, `${id}.json`);
   }

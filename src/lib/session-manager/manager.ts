@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { runConversation, runFirstMessage, runTitle } from "@/lib/operations";
+import {
+  NoContractToValidateError,
+  runConversation,
+  runFirstMessage,
+  runTitle,
+  runValidate,
+} from "@/lib/operations";
 import { type SSEWriter } from "@/lib/streaming";
 import {
   getStorage,
@@ -35,17 +41,21 @@ interface HandleMessageInput {
   signal?: AbortSignal;
 }
 
+interface CompletePhase1Input {
+  sessionId: string;
+  sse: SSEWriter;
+  signal?: AbortSignal;
+}
+
 /**
- * Top-level coordinator. As of M2 it owns two paths:
+ * Top-level coordinator. As of M3 it owns three paths:
  *
  *   - startSession: first-message draft (Phase 1 initial creation)
- *   - handleMessage: follow-up conversation in Phase 1 (questions + edits)
- *
- * Phase 2 stage runners and rollback paths arrive in later milestones.
- *
- * The per-session in-memory busy lock rejects overlapping operations on
- * the same session rather than queuing them, matching the spec's
- * "chat lock" semantics.
+ *   - handleMessage: follow-up conversation in Phase 1 (questions + edits).
+ *     If the session was in phase1_complete and the user produces an edit,
+ *     phase is reset back to phase1 (the prior validation no longer holds).
+ *   - completePhase1: validates the contract and transitions to
+ *     phase1_complete on PASS.
  */
 export class SessionManager {
   private readonly busy = new Set<string>();
@@ -136,8 +146,6 @@ export class SessionManager {
         throw new NoContractError(sessionId);
       }
 
-      // Append the user message to chat BEFORE the LLM call so it's
-      // persisted regardless of how the operation completes.
       await this.storage.appendChat(sessionId, {
         role: "user",
         content: trimmed,
@@ -165,6 +173,54 @@ export class SessionManager {
         content: result.assistantMessage,
         ts: new Date().toISOString(),
       });
+
+      // If this edit mutated a previously-validated contract, the prior
+      // validation no longer holds — reset phase to phase1 so the user
+      // re-runs Done. Question mode does not change the contract, so it
+      // doesn't reset.
+      if (result.mode === "edit" && refreshed.phase === "phase1_complete") {
+        const reset = await this.storage.setPhase(sessionId, "phase1");
+        await this.storage.setContractSnapshot(sessionId, null);
+        sse.send({ type: "phase", phase: reset.phase });
+      }
+    } finally {
+      this.busy.delete(sessionId);
+    }
+  }
+
+  async completePhase1(input: CompletePhase1Input): Promise<void> {
+    const { sessionId, sse, signal } = input;
+
+    if (this.busy.has(sessionId)) {
+      throw new SessionBusyError(sessionId);
+    }
+
+    this.busy.add(sessionId);
+    try {
+      const session = await this.storage.getSession(sessionId);
+      if (!session) {
+        sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
+        return;
+      }
+      if (!session.documents.projectContract) {
+        throw new NoContractError(sessionId);
+      }
+
+      sse.send({
+        type: "meta",
+        sessionId: session.id,
+        title: session.title,
+        phase: session.phase,
+      });
+
+      try {
+        await runValidate({ session, sse, signal });
+      } catch (err: unknown) {
+        if (err instanceof NoContractToValidateError) {
+          throw new NoContractError(sessionId);
+        }
+        throw err;
+      }
     } finally {
       this.busy.delete(sessionId);
     }

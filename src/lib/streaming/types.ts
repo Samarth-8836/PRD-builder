@@ -19,6 +19,12 @@ export type StreamEvent =
     }
   | { type: "phase"; phase: Phase }
   | { type: "progress"; op: string; status: "started" | "completed" | "failed"; note?: string }
+  | {
+      type: "validation_result";
+      status: "PASS" | "FAIL";
+      issues: string[];
+      suggestions: string[];
+    }
   | { type: "error"; message: string; code?: string }
   | { type: "complete" };
 

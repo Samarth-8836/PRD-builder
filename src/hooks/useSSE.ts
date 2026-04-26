@@ -49,6 +49,35 @@ export async function sendChatMessage(input: SendMessageInput): Promise<void> {
   }
 }
 
+/**
+ * Posts to /api/phase/complete and consumes the SSE stream of validation
+ * events. The result arrives as a `validation_result` event which is
+ * dispatched into the chat as a system message; on PASS, a `phase` event
+ * also updates the session store.
+ */
+export async function validatePhase1(sessionId: string): Promise<void> {
+  const chat = useChatStore.getState();
+  chat.setStreaming(true);
+
+  try {
+    const response = await fetch("/api/phase/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    });
+
+    if (!response.ok || !response.body) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `Validate request failed (${response.status}): ${detail.slice(0, 200)}`
+      );
+    }
+    await consumeSSE(response.body, dispatch);
+  } finally {
+    useChatStore.getState().setStreaming(false);
+  }
+}
+
 async function consumeSSE(
   body: ReadableStream<Uint8Array>,
   onEvent: (event: StreamEvent) => void
@@ -120,13 +149,24 @@ function dispatch(event: StreamEvent): void {
         doc.setDocument(event.content, event.version);
       return;
     case "progress":
-      // No UI for progress in M2 — could surface a subtle indicator later.
+      // No UI for progress in M3 — could surface a subtle indicator later.
       return;
     case "phase":
       if (session.current) {
         session.setCurrent({ ...session.current, phase: event.phase });
+        session.upsert({
+          id: session.current.id,
+          title: session.current.title,
+          phase: event.phase,
+          updatedAt: new Date().toISOString(),
+        });
       }
       return;
+    case "validation_result": {
+      const text = formatValidationResult(event);
+      chat.appendSystem(text);
+      return;
+    }
     case "error":
       chat.appendSystem(`Error: ${event.message}`);
       return;
@@ -134,6 +174,21 @@ function dispatch(event: StreamEvent): void {
       chat.setStreaming(false);
       return;
   }
+}
+
+function formatValidationResult(event: {
+  status: "PASS" | "FAIL";
+  issues: string[];
+  suggestions: string[];
+}): string {
+  if (event.status === "PASS") {
+    return "Phase 1 validated. The contract is locked in for Phase 2 (auto-design arrives in M4).";
+  }
+  const lines = ["Phase 1 validation failed.", "", "Issues:"];
+  for (const issue of event.issues) lines.push(`- ${issue}`);
+  lines.push("", "Suggestions:");
+  for (const s of event.suggestions) lines.push(`- ${s}`);
+  return lines.join("\n");
 }
 
 export async function refreshSessionList(): Promise<void> {

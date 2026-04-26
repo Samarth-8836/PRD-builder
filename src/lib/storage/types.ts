@@ -1,5 +1,6 @@
 export type Phase =
   | "phase1"
+  | "phase1_complete"
   | "phase2_design_running"
   | "phase2_design_review"
   | "phase2_wireframe_running"
@@ -34,6 +35,11 @@ export interface Session {
   phase: Phase;
   documents: SessionDocuments;
   chat: ChatMessage[];
+  /** Frozen baseline of the Project Contract at the moment of Phase 1 PASS.
+   *  Used in M5+ to detect rollback equivalence (if the post-rollback
+   *  contract matches this snapshot, the suspended Phase 2 work can be
+   *  restored as-is rather than regenerated). */
+  contractSnapshot?: string;
 }
 
 export interface SessionSummary {
@@ -56,4 +62,5 @@ export interface IStorage {
     content: string
   ): Promise<Session>;
   setPhase(id: string, phase: Phase): Promise<Session>;
+  setContractSnapshot(id: string, snapshot: string | null): Promise<Session>;
 }

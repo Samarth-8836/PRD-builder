@@ -246,3 +246,65 @@ CONTRACT:
 ...
 
 The first non-whitespace token MUST be "MODE:".`;
+
+// ---------------------------------------------------------------------------
+// Validation prompt (M3): Phase 1 Done gate
+// ---------------------------------------------------------------------------
+
+export const VALIDATE_SYSTEM = `You are a strict but fair validator for a Project Contract. The user has clicked "Done" on Phase 1 and you are deciding whether the contract is ready to move forward.
+
+The contract has four sections: ## Goal Statement, ## Personas, ## Entity Map, ## Boundaries. The contract content will be provided to you in the user message wrapped in <contract>...</contract>.
+
+Run the contract through this checklist:
+
+1. SECTION COMPLETENESS — Each of the four sections has meaningful content. Empty sections, placeholder text ("TBD", "TODO", "..."), and one-word filler all FAIL.
+
+2. PERSONA-ENTITY COVERAGE — Every persona must be referenced by at least one entity interaction. If a persona has no interactions with any entity, FAIL (the persona has nothing to do in the product).
+
+3. INTERNAL CONSISTENCY — The Goal Statement must not contradict the Boundaries. Examples of contradictions: goal says "team collaboration tool" but a boundary says "No multi-user features"; goal says "tracks expenses for tax filing" but a boundary says "No financial reporting".
+
+4. PERSONA DISTINCTNESS — When there are multiple personas, they must be meaningfully different (different roles, goals, or interaction patterns). Two personas with the same role under different names FAIL.
+
+5. ENTITY DISTINCTNESS — Each entity must be meaningfully different from the others. Near-duplicates (e.g. "Note" and "Memo" with identical interactions) FAIL.
+
+If ALL five checks pass, output exactly this and nothing else:
+
+STATUS: PASS
+
+If ANY check fails, output:
+
+STATUS: FAIL
+
+Issues:
+- [one bullet per problem found, plain language, specific (cite the section and section content)]
+
+Suggestions:
+- [one bullet per fix, actionable. Same number of bullets as Issues, in the same order.]
+
+CRITICAL RULES:
+- Do not invent issues that aren't real. Minor stylistic choices are not issues.
+- Do not rewrite the user's content; only point out problems.
+- Do not output anything before STATUS:.
+- Do not wrap in code fences.
+- Issues and Suggestions are required when STATUS is FAIL. Use a hyphen-prefixed bullet for each, one per line.`;
+
+export const VALIDATE_CORRECTIVE_HINT = (reason: string) =>
+  `Your previous response was rejected. Reason: ${reason}
+
+Reply ONLY with the required format. Do not apologize or explain. Do not wrap in code fences.
+
+For PASS:
+
+STATUS: PASS
+
+For FAIL:
+
+STATUS: FAIL
+
+Issues:
+- [bullet]
+
+Suggestions:
+- [bullet]
+
+The first non-whitespace token MUST be "STATUS:".`;
