@@ -13,6 +13,7 @@ import {
   type Session,
   type SessionSummary,
 } from "@/lib/storage";
+import { runDesignStage } from "./design-stage";
 
 export class SessionBusyError extends Error {
   readonly code = "SESSION_BUSY";
@@ -213,13 +214,21 @@ export class SessionManager {
         phase: session.phase,
       });
 
+      let validateResult;
       try {
-        await runValidate({ session, sse, signal });
+        validateResult = await runValidate({ session, sse, signal });
       } catch (err: unknown) {
         if (err instanceof NoContractToValidateError) {
           throw new NoContractError(sessionId);
         }
         throw err;
+      }
+
+      if (validateResult.status === "PASS") {
+        // Auto-advance to Phase 2 Stage 1 (Design) without further user
+        // input — per the spec, "Phase 1 PASS is consent."
+        const refreshed = (await this.storage.getSession(sessionId))!;
+        await runDesignStage({ session: refreshed, sse, signal });
       }
     } finally {
       this.busy.delete(sessionId);

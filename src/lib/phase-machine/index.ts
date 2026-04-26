@@ -1,11 +1,13 @@
 import type { Phase } from "@/lib/storage";
 
 /**
- * Module 10 — Phase 2 Stage Machine (M3 minimal version).
+ * Module 10 — Phase 2 Stage Machine.
  *
- * Tracks valid transitions between Session phases. M3 only needs the
- * boundary between phase1 and phase1_complete; the Phase 2 stages (design,
- * wireframe) get filled in starting in M4 alongside the stage runners.
+ * Tracks valid transitions between Session phases. Each Phase 2 sub-stage
+ * is its own Phase value (design_running, design_review, wireframe_running,
+ * ...), so the same `phase` field on the Session record carries the full
+ * lifecycle. Use `assertTransition` before persisting a new phase to
+ * surface invalid transitions early.
  */
 
 const TRANSITIONS: Record<Phase, Phase[]> = {
@@ -59,4 +61,16 @@ export class PhaseTransitionError extends Error {
   constructor(public from: Phase, public to: Phase) {
     super(`Invalid phase transition: ${from} -> ${to}`);
   }
+}
+
+export function assertTransition(from: Phase, to: Phase): void {
+  if (!canTransition(from, to)) throw new PhaseTransitionError(from, to);
+}
+
+export function isPhase2Running(phase: Phase): boolean {
+  return phase === "phase2_design_running" || phase === "phase2_wireframe_running";
+}
+
+export function isPhase2Review(phase: Phase): boolean {
+  return phase === "phase2_design_review" || phase === "phase2_wireframe_review";
 }

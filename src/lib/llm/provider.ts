@@ -1,5 +1,10 @@
 import { resolveModel, type ModelRole, type ResolvedModel } from "./config";
-import { RetryableHttpError, isRetryableStatus, withRetry } from "./retry";
+import {
+  RetryableHttpError,
+  isRetryableStatus,
+  parseRetryAfter,
+  withRetry,
+} from "./retry";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -65,7 +70,10 @@ async function openCompletionStream(
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     const msg = `LLM HTTP ${res.status} from ${model.provider}: ${body.slice(0, 500)}`;
-    if (isRetryableStatus(res.status)) throw new RetryableHttpError(res.status, msg);
+    if (isRetryableStatus(res.status)) {
+      const retryAfter = parseRetryAfter(res.headers.get("retry-after"), body);
+      throw new RetryableHttpError(res.status, msg, retryAfter);
+    }
     throw new Error(msg);
   }
   return res;

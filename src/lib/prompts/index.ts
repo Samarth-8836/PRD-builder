@@ -2,8 +2,6 @@ import {
   CONVERSATION_CORRECTIVE_HINT,
   CONVERSATION_EXAMPLE_BOUNDARY_ASSISTANT,
   CONVERSATION_EXAMPLE_BOUNDARY_USER,
-  CONVERSATION_EXAMPLE_EDIT_ASSISTANT,
-  CONVERSATION_EXAMPLE_EDIT_USER,
   CONVERSATION_EXAMPLE_QUESTION_ASSISTANT,
   CONVERSATION_EXAMPLE_QUESTION_USER,
   CONVERSATION_SYSTEM,
@@ -15,12 +13,31 @@ import {
   VALIDATE_CORRECTIVE_HINT,
   VALIDATE_SYSTEM,
 } from "./phase1";
+import {
+  NAV_VALIDATE_CORRECTIVE_HINT,
+  NAV_VALIDATE_SYSTEM,
+  SCREEN_CORRECT_CORRECTIVE_HINT,
+  SCREEN_CORRECT_SYSTEM,
+  SCREEN_EXTRACT_CORRECTIVE_HINT,
+  SCREEN_EXTRACT_SYSTEM,
+  WORKFLOW_DETAIL_CORRECTIVE_HINT,
+  WORKFLOW_DETAIL_SYSTEM,
+  WORKFLOW_DISCOVERY_CORRECTIVE_HINT,
+  WORKFLOW_DISCOVERY_EXAMPLE_ASSISTANT,
+  WORKFLOW_DISCOVERY_EXAMPLE_USER,
+  WORKFLOW_DISCOVERY_SYSTEM,
+} from "./phase2";
 
 export type PromptSlug =
   | "phase1.first_message"
   | "phase1.conversation"
   | "phase1.title"
-  | "phase1.validate";
+  | "phase1.validate"
+  | "phase2.workflow_discovery"
+  | "phase2.workflow_detail"
+  | "phase2.screen_extract"
+  | "phase2.nav_validate"
+  | "phase2.screen_correct";
 
 export interface PromptSpec {
   system: string;
@@ -41,12 +58,6 @@ const REGISTRY: Record<PromptSlug, PromptSpec> = {
   },
   "phase1.conversation": {
     system: CONVERSATION_SYSTEM,
-    // Note: the edit-mode few-shot was removed because its example contract
-    // bled into context and confused the model when the current_contract
-    // was different (model would ask "which contract do you want updated?").
-    // The system prompt's strict EDIT format rules are sufficient on their
-    // own; the question and boundary-conflict examples don't include full
-    // contract bodies so they're safe to keep.
     fewShot: [
       {
         user: CONVERSATION_EXAMPLE_QUESTION_USER,
@@ -65,6 +76,32 @@ const REGISTRY: Record<PromptSlug, PromptSpec> = {
   "phase1.validate": {
     system: VALIDATE_SYSTEM,
     correctiveHint: VALIDATE_CORRECTIVE_HINT,
+  },
+  "phase2.workflow_discovery": {
+    system: WORKFLOW_DISCOVERY_SYSTEM,
+    fewShot: [
+      {
+        user: WORKFLOW_DISCOVERY_EXAMPLE_USER,
+        assistant: WORKFLOW_DISCOVERY_EXAMPLE_ASSISTANT,
+      },
+    ],
+    correctiveHint: WORKFLOW_DISCOVERY_CORRECTIVE_HINT,
+  },
+  "phase2.workflow_detail": {
+    system: WORKFLOW_DETAIL_SYSTEM,
+    correctiveHint: WORKFLOW_DETAIL_CORRECTIVE_HINT,
+  },
+  "phase2.screen_extract": {
+    system: SCREEN_EXTRACT_SYSTEM,
+    correctiveHint: SCREEN_EXTRACT_CORRECTIVE_HINT,
+  },
+  "phase2.nav_validate": {
+    system: NAV_VALIDATE_SYSTEM,
+    correctiveHint: NAV_VALIDATE_CORRECTIVE_HINT,
+  },
+  "phase2.screen_correct": {
+    system: SCREEN_CORRECT_SYSTEM,
+    correctiveHint: SCREEN_CORRECT_CORRECTIVE_HINT,
   },
 };
 

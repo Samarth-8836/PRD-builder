@@ -1,6 +1,6 @@
 "use client";
 
-import type { StreamEvent } from "@/lib/streaming";
+import type { DocumentName, StreamEvent } from "@/lib/streaming";
 import { useChatStore } from "@/stores/chat";
 import { useDocumentStore } from "@/stores/document";
 import { useSessionStore } from "@/stores/session";
@@ -51,9 +51,7 @@ export async function sendChatMessage(input: SendMessageInput): Promise<void> {
 
 /**
  * Posts to /api/phase/complete and consumes the SSE stream of validation
- * events. The result arrives as a `validation_result` event which is
- * dispatched into the chat as a system message; on PASS, a `phase` event
- * also updates the session store.
+ * events (and on PASS, the auto-triggered Phase 2 design stage events).
  */
 export async function validatePhase1(sessionId: string): Promise<void> {
   const chat = useChatStore.getState();
@@ -142,14 +140,18 @@ function dispatch(event: StreamEvent): void {
       chat.setPendingAssistant(event.content);
       return;
     case "document_delta":
-      if (event.name === "projectContract") doc.appendDelta(event.text);
+      doc.appendDelta(event.name as DocumentName, event.text);
       return;
     case "document":
-      if (event.name === "projectContract")
-        doc.setDocument(event.content, event.version);
+      doc.setDocument(event.name as DocumentName, event.content, event.version);
       return;
     case "progress":
-      // No UI for progress in M3 — could surface a subtle indicator later.
+      // Surface "completed" milestones as system chat messages so the
+      // user sees stage progress. "started" notes are silent — too
+      // noisy to render every sub-step kickoff.
+      if (event.status === "completed" && event.note) {
+        chat.appendSystem(event.note);
+      }
       return;
     case "phase":
       if (session.current) {
@@ -182,7 +184,7 @@ function formatValidationResult(event: {
   suggestions: string[];
 }): string {
   if (event.status === "PASS") {
-    return "Phase 1 validated. The contract is locked in for Phase 2 (auto-design arrives in M4).";
+    return "Phase 1 validated. Starting Phase 2 design...";
   }
   const lines = ["Phase 1 validation failed.", "", "Issues:"];
   for (const issue of event.issues) lines.push(`- ${issue}`);
@@ -210,12 +212,30 @@ export async function loadSession(id: string): Promise<void> {
     phase: s.phase,
   });
   useChatStore.getState().setMessages(s.chat);
-  const contract = s.documents.projectContract;
-  if (contract) {
-    useDocumentStore
-      .getState()
-      .setDocument(contract.content, contract.version);
-  } else {
-    useDocumentStore.getState().reset();
+
+  const doc = useDocumentStore.getState();
+  doc.reset();
+  if (s.documents.projectContract) {
+    doc.setDocument(
+      "projectContract",
+      s.documents.projectContract.content,
+      s.documents.projectContract.version
+    );
   }
+  if (s.documents.workflowMap) {
+    doc.setDocument(
+      "workflowMap",
+      s.documents.workflowMap.content,
+      s.documents.workflowMap.version
+    );
+  }
+  if (s.documents.screenInventory) {
+    doc.setDocument(
+      "screenInventory",
+      s.documents.screenInventory.content,
+      s.documents.screenInventory.version
+    );
+  }
+  // Reset to the contract tab so the user lands somewhere familiar.
+  doc.setActiveTab("projectContract");
 }
