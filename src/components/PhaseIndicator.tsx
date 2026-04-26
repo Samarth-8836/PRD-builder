@@ -11,19 +11,24 @@ export function PhaseIndicator({ phase }: PhaseIndicatorProps) {
   const phase1State =
     phase === "phase1" ? "active" : "complete";
 
-  const designState = stageStateFor(phase, "design");
+  const workflowState = stageStateFor(phase, "workflow");
+  const screenState = stageStateFor(phase, "screen");
   const wireframeState = stageStateFor(phase, "wireframe");
   const phase2Highlighted =
-    designState !== "pending" || wireframeState !== "pending";
+    workflowState !== "pending" ||
+    screenState !== "pending" ||
+    wireframeState !== "pending";
 
   return (
-    <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider">
+    <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wider">
       <Chip state={phase1State} label="Phase 1" />
       <span className="text-neutral-700">/</span>
       <span className={`text-[10px] ${phase2Highlighted ? "text-neutral-300" : "text-neutral-600"}`}>
         Phase 2:
       </span>
-      <SubChip state={designState} label="Design" />
+      <SubChip state={workflowState} label="Workflows" />
+      <span className="text-neutral-700">›</span>
+      <SubChip state={screenState} label="Screens" />
       <span className="text-neutral-700">›</span>
       <SubChip state={wireframeState} label="Wireframe" />
       <span className="ml-2 text-neutral-500 normal-case tracking-normal">
@@ -85,10 +90,27 @@ function markerFor(state: ChipState): string {
   }
 }
 
-function stageStateFor(phase: Phase, stage: "design" | "wireframe"): ChipState {
-  if (stage === "design") {
-    if (phase === "phase2_design_running") return "active";
-    if (phase === "phase2_design_review") return "review";
+function stageStateFor(
+  phase: Phase,
+  stage: "workflow" | "screen" | "wireframe"
+): ChipState {
+  if (stage === "workflow") {
+    if (phase === "phase2_workflow_running") return "active";
+    if (phase === "phase2_workflow_review") return "review";
+    if (
+      phase === "phase2_screen_running" ||
+      phase === "phase2_screen_review" ||
+      phase === "phase2_wireframe_running" ||
+      phase === "phase2_wireframe_review" ||
+      phase === "complete"
+    ) {
+      return "complete";
+    }
+    return "pending";
+  }
+  if (stage === "screen") {
+    if (phase === "phase2_screen_running") return "active";
+    if (phase === "phase2_screen_review") return "review";
     if (
       phase === "phase2_wireframe_running" ||
       phase === "phase2_wireframe_review" ||
@@ -98,6 +120,7 @@ function stageStateFor(phase: Phase, stage: "design" | "wireframe"): ChipState {
     }
     return "pending";
   }
+  // wireframe
   if (phase === "phase2_wireframe_running") return "active";
   if (phase === "phase2_wireframe_review") return "review";
   if (phase === "complete") return "complete";

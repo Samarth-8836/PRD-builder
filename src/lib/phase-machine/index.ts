@@ -14,19 +14,42 @@ const TRANSITIONS: Record<Phase, Phase[]> = {
   phase1: ["phase1_complete"],
   phase1_complete: [
     "phase1", // user edits contract -> validation invalidated -> back to phase1
-    "phase2_design_running", // M4 will use this
+    "phase2_workflow_running",
   ],
-  phase2_design_running: ["phase2_design_review", "phase1"],
-  phase2_design_review: [
-    "phase2_wireframe_running",
-    "phase2_design_running",
+  phase2_workflow_running: [
+    "phase2_workflow_review",
+    "phase1",
+    "phase1_complete",
+  ],
+  phase2_workflow_review: [
+    "phase2_screen_running",
+    "phase2_workflow_running",
     "phase1",
   ],
-  phase2_wireframe_running: ["phase2_wireframe_review", "phase1"],
+  phase2_screen_running: [
+    "phase2_screen_review",
+    "phase2_workflow_review",
+    "phase2_workflow_running", // cascade rewind
+    "phase1",
+  ],
+  phase2_screen_review: [
+    "phase2_wireframe_running",
+    "phase2_screen_running",
+    "phase2_workflow_running", // cascade: workflow_change rewinds back
+    "phase1",
+  ],
+  phase2_wireframe_running: [
+    "phase2_wireframe_review",
+    "phase2_screen_review",
+    "phase2_workflow_review",
+    "phase1",
+  ],
   phase2_wireframe_review: [
     "complete",
     "phase2_wireframe_running",
-    "phase2_design_review",
+    "phase2_screen_review",
+    "phase2_workflow_running", // cascade: workflow_change full rewind
+    "phase2_screen_running", // cascade: screen_only rewind
     "phase1",
   ],
   complete: ["phase1"],
@@ -43,10 +66,14 @@ export function describePhase(phase: Phase): string {
       return "Phase 1 - Drafting";
     case "phase1_complete":
       return "Phase 1 - Validated";
-    case "phase2_design_running":
-      return "Phase 2 - Designing";
-    case "phase2_design_review":
-      return "Phase 2 - Design Review";
+    case "phase2_workflow_running":
+      return "Phase 2 - Designing Workflows";
+    case "phase2_workflow_review":
+      return "Phase 2 - Workflow Review";
+    case "phase2_screen_running":
+      return "Phase 2 - Designing Screens";
+    case "phase2_screen_review":
+      return "Phase 2 - Screen Review";
     case "phase2_wireframe_running":
       return "Phase 2 - Building Wireframe";
     case "phase2_wireframe_review":
@@ -68,9 +95,17 @@ export function assertTransition(from: Phase, to: Phase): void {
 }
 
 export function isPhase2Running(phase: Phase): boolean {
-  return phase === "phase2_design_running" || phase === "phase2_wireframe_running";
+  return (
+    phase === "phase2_workflow_running" ||
+    phase === "phase2_screen_running" ||
+    phase === "phase2_wireframe_running"
+  );
 }
 
 export function isPhase2Review(phase: Phase): boolean {
-  return phase === "phase2_design_review" || phase === "phase2_wireframe_review";
+  return (
+    phase === "phase2_workflow_review" ||
+    phase === "phase2_screen_review" ||
+    phase === "phase2_wireframe_review"
+  );
 }

@@ -33,7 +33,7 @@ interface RunWireframeStageInput {
  *
  * On success the runner persists the wireframe artifact, emits a
  * `wireframe_ready` event, and transitions phase to phase2_wireframe_review.
- * On failure it rolls back to phase2_design_review so the user can re-trigger
+ * On failure it rolls back to phase2_screen_review so the user can re-trigger
  * via Approve.
  */
 export async function runWireframeStage(
@@ -175,10 +175,10 @@ export async function runWireframeStage(
       note: "Wireframe ready - click the Wireframe tab to view",
     });
   } catch (err: unknown) {
-    // Roll back to phase2_design_review so the user can re-trigger via
+    // Roll back to phase2_screen_review so the user can re-trigger via
     // Approve (or roll all the way back to Phase 1 from the chat).
-    await storage.setPhase(sessionId, "phase2_design_review");
-    sse.send({ type: "phase", phase: "phase2_design_review" });
+    await storage.setPhase(sessionId, "phase2_screen_review");
+    sse.send({ type: "phase", phase: "phase2_screen_review" });
     sse.send({
       type: "progress",
       op: "phase2.wireframe",

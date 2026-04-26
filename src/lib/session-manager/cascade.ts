@@ -1,10 +1,6 @@
 import {
   formatDataJs,
-  formatScreenInventory,
   runDummyData,
-  runNavValidate,
-  runScreenCorrect,
-  runScreenExtract,
   runScreenHtml,
 } from "@/lib/operations";
 import {
@@ -14,7 +10,8 @@ import {
 } from "@/lib/parsers";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Phase, type Session } from "@/lib/storage";
-import { runDesignStage } from "./design-stage";
+import { runScreenStage } from "./screen-stage";
+import { runWorkflowStage } from "./workflow-stage";
 
 interface RunCascadeInput {
   session: Session;
@@ -26,53 +23,60 @@ interface RunCascadeInput {
    *  screen_only to regenerate just one HTML file. */
   target?: string;
   /** Phase the user was in when the change was issued. Cascade behavior
-   *  differs between design_review (Stage 1) and wireframe_review
-   *  (Stage 2). */
+   *  branches across the three Phase 2 review states. */
   phase: Phase;
 }
 
 /**
- * Cascade runner for COMPATIBLE Phase 2 changes. Routes by phase + scope:
+ * Cascade runner for COMPATIBLE Phase 2 changes. Routes by review phase ×
+ * scope. Upstream changes rewind to earlier stages; downstream-only
+ * changes patch in place.
  *
- *   design_review +
- *     workflow_change   re-runs the full design stage with feedback
- *     screen_only       re-runs only the screen pipeline
- *     data_only         no-op + system note ("regenerate after wireframe is built")
+ *   workflow_review +
+ *     workflow_change   re-runs workflow stage with feedback
+ *     screen_only       system note (screens come next via Approve)
+ *     data_only         system note (data is wireframe-stage)
+ *
+ *   screen_review +
+ *     workflow_change   rewinds: clears screen_inventory, runs workflow
+ *                       stage; ends at workflow_review
+ *     screen_only       re-runs screen stage with feedback
+ *     data_only         system note
  *
  *   wireframe_review +
- *     workflow_change   clears wireframe + re-runs design stage; ends at
- *                       design_review so the user can approve the new design
- *                       which will then trigger a fresh wireframe stage
- *     screen_only       regenerates one screen's HTML (or all when no target)
- *     data_only         regenerates dummy data + rebuilds data.js; HTML
- *                       files preserved verbatim
- *
- * Document and wireframe versions bump as appropriate.
+ *     workflow_change   rewinds: clears wireframe + screen_inventory,
+ *                       runs workflow stage; ends at workflow_review
+ *     screen_only with target  regenerates one screen's HTML
+ *     screen_only no target    regenerates every screen's HTML
+ *     data_only         regenerates dummy data + rebuilds data.js
  */
 export async function runCascade(input: RunCascadeInput): Promise<void> {
   const { phase } = input;
-  if (phase === "phase2_design_review") {
-    await runDesignReviewCascade(input);
-    return;
+  switch (phase) {
+    case "phase2_workflow_review":
+      await runWorkflowReviewCascade(input);
+      return;
+    case "phase2_screen_review":
+      await runScreenReviewCascade(input);
+      return;
+    case "phase2_wireframe_review":
+      await runWireframeReviewCascade(input);
+      return;
+    default:
+      input.sse.send({
+        type: "progress",
+        op: "phase2.cascade",
+        status: "completed",
+        note: `Cascade not applicable in phase ${phase}; no changes applied`,
+      });
   }
-  if (phase === "phase2_wireframe_review") {
-    await runWireframeReviewCascade(input);
-    return;
-  }
-  // Other phases shouldn't reach here — handlePhase2*Chat is gated by phase.
-  input.sse.send({
-    type: "progress",
-    op: "phase2.cascade",
-    status: "completed",
-    note: `Cascade not applicable in phase ${phase}; no changes applied`,
-  });
 }
 
 // ---------------------------------------------------------------------------
-// Design-review cascade (Stage 1)
+// Workflow-review cascade (Stage 1a)
 // ---------------------------------------------------------------------------
 
-async function runDesignReviewCascade(input: RunCascadeInput): Promise<void> {
+async function runWorkflowReviewCascade(input: RunCascadeInput): Promise<void> {
   const { session, sse, signal, scope, description } = input;
 
   if (scope === "workflow_change") {
@@ -80,103 +84,94 @@ async function runDesignReviewCascade(input: RunCascadeInput): Promise<void> {
       type: "progress",
       op: "phase2.cascade",
       status: "started",
-      note: "Updating workflows and screens to reflect the change",
+      note: "Updating workflows to reflect the change",
     });
-    await runDesignStage({ session, sse, signal, feedback: description });
+    await runWorkflowStage({
+      session,
+      sse,
+      signal,
+      feedback: description,
+      errorRollbackPhase: "phase2_workflow_review",
+    });
     return;
   }
 
   if (scope === "screen_only") {
-    await runScreenOnlyDesignCascade(input);
+    sse.send({
+      type: "progress",
+      op: "phase2.cascade",
+      status: "completed",
+      note:
+        "Screen tweaks apply once the screen list is generated. Click Approve to move on, then ask again.",
+    });
     return;
   }
 
-  // data_only at design-review — sample content lives in the wireframe,
-  // which doesn't exist yet. Surface the request as a system note rather
-  // than churning anything.
+  // data_only at workflow-review — wireframe doesn't exist yet.
   sse.send({
     type: "progress",
     op: "phase2.cascade",
     status: "completed",
     note:
-      "Sample-data tweaks take effect once the wireframe is generated. Click Approve to build it.",
+      "Sample-data tweaks take effect once the wireframe is generated. Click Approve through the next two stages first.",
   });
 }
 
-async function runScreenOnlyDesignCascade(
-  input: RunCascadeInput
-): Promise<void> {
-  const { session, sse, signal, description } = input;
+// ---------------------------------------------------------------------------
+// Screen-review cascade (Stage 1b)
+// ---------------------------------------------------------------------------
+
+async function runScreenReviewCascade(input: RunCascadeInput): Promise<void> {
+  const { session, sse, signal, scope, description } = input;
   const storage = getStorage();
-  const contract = session.documents.projectContract!.content;
-  const workflowMap = session.documents.workflowMap!.content;
 
-  sse.send({
-    type: "progress",
-    op: "phase2.cascade",
-    status: "started",
-    note: "Updating screens to reflect the change",
-  });
-
-  let screens = await runScreenExtract({
-    contract,
-    workflowMap,
-    feedback: description,
-    signal,
-  });
-  sse.send({
-    type: "progress",
-    op: "phase2.screen_extract",
-    status: "completed",
-    note: `Re-derived ${screens.length} screens`,
-  });
-
-  const validation = await runNavValidate({ workflowMap, screens, signal });
-  sse.send({
-    type: "progress",
-    op: "phase2.nav_validate",
-    status: "completed",
-    note:
-      validation.status === "ok"
-        ? "Navigation graph is complete"
-        : `Found ${validation.gaps.length} gap${validation.gaps.length === 1 ? "" : "s"}`,
-  });
-
-  if (validation.status === "gaps") {
-    screens = await runScreenCorrect({
-      workflowMap,
-      screens,
-      gaps: validation.gaps,
-      signal,
-    });
+  if (scope === "workflow_change") {
     sse.send({
       type: "progress",
-      op: "phase2.screen_correct",
-      status: "completed",
-      note: `Updated to ${screens.length} screens`,
+      op: "phase2.cascade",
+      status: "started",
+      note:
+        "Rewinding to the Workflow stage so workflows can be updated; you'll re-approve screens after",
     });
+    // Drop the live screen inventory — it'll be regenerated after the
+    // user re-approves the new workflows.
+    if (session.documents.screenInventory) {
+      await storage.clearDocument(session.id, "screenInventory");
+    }
+    await runWorkflowStage({
+      session,
+      sse,
+      signal,
+      feedback: description,
+      errorRollbackPhase: "phase2_screen_review",
+    });
+    return;
   }
 
-  const inventory = formatScreenInventory(screens);
-  const updated = await storage.setDocument(session.id, "screenInventory", inventory);
-  sse.send({
-    type: "document",
-    name: "screenInventory",
-    version: updated.documents.screenInventory!.version,
-    content: inventory,
-  });
-  sse.send({
-    type: "progress",
-    op: "phase2.screen_inventory",
-    status: "completed",
-    note: "Screen Inventory updated",
-  });
+  if (scope === "screen_only") {
+    sse.send({
+      type: "progress",
+      op: "phase2.cascade",
+      status: "started",
+      note: "Updating screens to reflect the change",
+    });
+    await runScreenStage({
+      session,
+      sse,
+      signal,
+      feedback: description,
+      errorRollbackPhase: "phase2_screen_review",
+    });
+    return;
+  }
 
+  // data_only at screen-review — wireframe still doesn't exist.
   sse.send({
     type: "progress",
     op: "phase2.cascade",
     status: "completed",
-    note: "Screens updated - workflows unchanged",
+    note:
+      "Sample-data tweaks take effect once the wireframe is generated. Click Approve to build it first.",
   });
 }
 
@@ -189,35 +184,33 @@ async function runWireframeReviewCascade(input: RunCascadeInput): Promise<void> 
   const storage = getStorage();
 
   if (scope === "workflow_change") {
-    // Rewind to the Design stage. Clear the live wireframe so the doc panel
-    // doesn't show a stale iframe while the design re-runs; the design stage
-    // will end at phase2_design_review and the user must Approve again to
-    // trigger a fresh wireframe.
+    // Full rewind: clear wireframe + screen_inventory; the user will
+    // re-approve workflows, then screens, then a fresh wireframe.
     sse.send({
       type: "progress",
       op: "phase2.cascade",
       status: "started",
       note:
-        "Rewinding to the Design stage so workflows and screens can be updated",
+        "Rewinding to the Workflow stage; you'll re-approve screens and the wireframe after",
     });
     if (session.wireframe) {
       await storage.clearWireframe(session.id);
       sse.send({ type: "wireframe_cleared" });
     }
-    await runDesignStage({ session, sse, signal, feedback: description });
-    sse.send({
-      type: "progress",
-      op: "phase2.cascade",
-      status: "completed",
-      note:
-        "Design updated — review the new workflows/screens and click Approve to regenerate the wireframe",
+    if (session.documents.screenInventory) {
+      await storage.clearDocument(session.id, "screenInventory");
+    }
+    await runWorkflowStage({
+      session,
+      sse,
+      signal,
+      feedback: description,
+      errorRollbackPhase: "phase2_wireframe_review",
     });
     return;
   }
 
   if (!session.wireframe) {
-    // Defensive: should not happen — handlePhase2WireframeReviewChat
-    // shouldn't fire if the wireframe is missing. Surface as a system note.
     sse.send({
       type: "progress",
       op: "phase2.cascade",
@@ -299,7 +292,6 @@ async function runDataOnlyWireframeCascade(input: DataOnlyInput): Promise<void> 
     note: `Sample data refreshed (${Object.keys(data).length} entities)`,
   });
 
-  // Update only data.js; preserve every other file from the live wireframe.
   const nextFiles: Record<string, string> = {
     ...session.wireframe!.files,
     "data.js": formatDataJs(data),
@@ -334,18 +326,12 @@ async function runScreenOnlyWireframeCascade(
   const storage = getStorage();
   const contract = session.documents.projectContract!.content;
 
-  // Decide which screens to regenerate. With a valid target, regenerate
-  // just that one. Otherwise (model didn't pick one or it's not in the
-  // inventory), fall back to "every screen" — broader but still cheaper
-  // than a full design re-run.
   const idSet = new Set(screens.map((s) => s.id));
   const targetIds: string[] =
     target && idSet.has(target) ? [target] : screens.map((s) => s.id);
 
-  // Pull the dummy data shape from the live data.js so runScreenHtml gets
-  // a faithful picture of what window.DATA holds — without re-running the
-  // dummy_data LLM step.
-  const data = extractDummyData(session.wireframe!.files["data.js"] ?? "") ?? {};
+  const data =
+    extractDummyData(session.wireframe!.files["data.js"] ?? "") ?? {};
 
   sse.send({
     type: "progress",
@@ -389,17 +375,15 @@ async function runScreenOnlyWireframeCascade(
     type: "progress",
     op: "phase2.cascade",
     status: "completed",
-    note: `Screens updated (${targetIds.length} regenerated, ${
-      Object.keys(session.wireframe!.files).length - targetIds.length - 2
-    } preserved)`,
+    note:
+      targetIds.length === 1
+        ? `Updated ${targetIds[0]}.html`
+        : `Updated all ${targetIds.length} screens`,
   });
 
-  // Note: we silently feed the user's description into runScreenHtml? No —
-  // the prompt doesn't accept feedback yet. The model uses the screen spec
-  // + data shape verbatim. The change_context description nudges the
-  // model only via the conversation history that ChatPanel already has.
-  // The targeted regen still produces a fresh page; if the user wants more
-  // surgical control, they can iterate. Suppressing unused-var lint:
+  // The change_context description is delivered to the model via the
+  // chat history (already in conversation context); we don't pass it
+  // again here. Suppressing unused-var lint:
   void description;
 }
 

@@ -1,8 +1,10 @@
 export type Phase =
   | "phase1"
   | "phase1_complete"
-  | "phase2_design_running"
-  | "phase2_design_review"
+  | "phase2_workflow_running"
+  | "phase2_workflow_review"
+  | "phase2_screen_running"
+  | "phase2_screen_review"
   | "phase2_wireframe_running"
   | "phase2_wireframe_review"
   | "complete";
@@ -65,9 +67,10 @@ export interface Phase2Snapshot {
   workflowMap?: DocumentRecord;
   screenInventory?: DocumentRecord;
   wireframe?: WireframeArtifact;
-  /** Phase the user was in at the moment of rollback (typically
-   *  phase2_design_review or phase2_wireframe_review). The restore
-   *  returns the session to this phase if the contract is unchanged. */
+  /** Phase the user was in at the moment of rollback (one of
+   *  phase2_workflow_review, phase2_screen_review, or
+   *  phase2_wireframe_review). The restore returns the session to this
+   *  phase if the contract is unchanged. */
   phase: Phase;
   takenAt: string;
 }

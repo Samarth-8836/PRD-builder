@@ -31,9 +31,11 @@ export function DocumentPanel() {
   const hasContract = docs.projectContract.content.length > 0;
   const showDoneButton =
     hasContract && current?.phase === "phase1" && docs.projectContract.finalized;
-  const showApproveDesign =
-    current?.phase === "phase2_design_review" &&
-    docs.workflowMap.content.length > 0 &&
+  const showApproveWorkflow =
+    current?.phase === "phase2_workflow_review" &&
+    docs.workflowMap.content.length > 0;
+  const showApproveScreen =
+    current?.phase === "phase2_screen_review" &&
     docs.screenInventory.content.length > 0;
   const showApproveWireframe =
     current?.phase === "phase2_wireframe_review" && docs.wireframe.ready;
@@ -97,7 +99,16 @@ export function DocumentPanel() {
                 Done - Validate &amp; Complete Phase 1
               </button>
             )}
-            {showApproveDesign && (
+            {showApproveWorkflow && (
+              <button
+                onClick={() => void handleApprove()}
+                disabled={streaming}
+                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
+              >
+                Approve → Generate Screens
+              </button>
+            )}
+            {showApproveScreen && (
               <button
                 onClick={() => void handleApprove()}
                 disabled={streaming}

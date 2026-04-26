@@ -17,8 +17,9 @@ import {
   type SessionSummary,
 } from "@/lib/storage";
 import { runCascade } from "./cascade";
-import { runDesignStage } from "./design-stage";
+import { runScreenStage } from "./screen-stage";
 import { runWireframeStage } from "./wireframe-stage";
+import { runWorkflowStage } from "./workflow-stage";
 
 export class SessionBusyError extends Error {
   readonly code = "SESSION_BUSY";
@@ -75,13 +76,16 @@ interface ApproveInput {
 /**
  * Top-level coordinator. Routes by phase:
  *
- *   - phase1 / phase1_complete: Phase 1 conversation (questions + edits)
- *   - phase2_design_review:     Phase 2 review chat (questions, COMPATIBLE
- *                               cascades, drift detection)
- *   - phase2_design_running:    rejected — stage is mid-flight
+ *   - phase1 / phase1_complete:   Phase 1 conversation (questions + edits)
+ *   - phase2_workflow_review |
+ *     phase2_screen_review |
+ *     phase2_wireframe_review:    Phase 2 review chat (questions, COMPATIBLE
+ *                                 cascades, drift detection)
+ *   - phase2_*_running:           rejected — stage is mid-flight
  *
  * Plus startSession (Phase 1 first-message), completePhase1 (validate +
- * auto-advance), and rollbackToPhase1 (snapshot Phase 2 state and return).
+ * auto-advance to workflow stage), approve (advance through Phase 2
+ * sub-stages), and rollbackToPhase1 (snapshot Phase 2 state and return).
  */
 export class SessionManager {
   private readonly busy = new Set<string>();
@@ -197,11 +201,13 @@ export class SessionManager {
         case "phase1_complete":
           await this.handlePhase1Chat(refreshed, trimmed, sse, signal);
           return;
-        case "phase2_design_review":
+        case "phase2_workflow_review":
+        case "phase2_screen_review":
         case "phase2_wireframe_review":
           await this.handlePhase2ReviewChat(refreshed, trimmed, sse, signal);
           return;
-        case "phase2_design_running":
+        case "phase2_workflow_running":
+        case "phase2_screen_running":
         case "phase2_wireframe_running":
           throw new SessionBusyError(sessionId);
         case "complete":
@@ -365,7 +371,7 @@ export class SessionManager {
       if (snapshot) {
         await this.storage.setPhase2Snapshot(sessionId, null);
       }
-      await runDesignStage({ session: refreshed, sse, signal });
+      await runWorkflowStage({ session: refreshed, sse, signal });
     } finally {
       this.busy.delete(sessionId);
     }
@@ -446,7 +452,20 @@ export class SessionManager {
         phase: session.phase,
       });
 
-      if (session.phase === "phase2_design_review") {
+      if (session.phase === "phase2_workflow_review") {
+        if (
+          !session.documents.workflowMap ||
+          !session.documents.projectContract
+        ) {
+          throw new WrongPhaseError(
+            "Cannot approve — Workflow Map is missing"
+          );
+        }
+        await runScreenStage({ session, sse, signal });
+        return;
+      }
+
+      if (session.phase === "phase2_screen_review") {
         if (
           !session.documents.workflowMap ||
           !session.documents.screenInventory ||
@@ -479,7 +498,7 @@ export class SessionManager {
       }
 
       throw new WrongPhaseError(
-        `Cannot approve from ${session.phase}; approval is only available from phase2_design_review or phase2_wireframe_review`
+        `Cannot approve from ${session.phase}; approval is only available from one of the Phase 2 review states`
       );
     } finally {
       this.busy.delete(sessionId);
@@ -502,7 +521,8 @@ export class SessionManager {
         return;
       }
       if (
-        session.phase !== "phase2_design_review" &&
+        session.phase !== "phase2_workflow_review" &&
+        session.phase !== "phase2_screen_review" &&
         session.phase !== "phase2_wireframe_review"
       ) {
         throw new WrongPhaseError(
@@ -575,10 +595,11 @@ function contractsMatch(session: Session, snapshot: Phase2Snapshot): boolean {
   // Snapshot exists and the user is doing Done again; phase2Snapshot is
   // present, meaning a rollback happened. If the contract is unchanged
   // since the original PASS, restore — back to whichever Phase 2 review
-  // state the user was in (design or wireframe).
+  // state the user was in (workflow / screen / wireframe).
   return (
     baseline === current &&
-    (snapshot.phase === "phase2_design_review" ||
+    (snapshot.phase === "phase2_workflow_review" ||
+      snapshot.phase === "phase2_screen_review" ||
       snapshot.phase === "phase2_wireframe_review")
   );
 }

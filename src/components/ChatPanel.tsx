@@ -23,10 +23,12 @@ export function ChatPanel() {
   }, [messages.length, pendingAssistant.length, streaming, drift]);
 
   const blocked = drift?.classification === "DRIFT";
-  const inDesignReview = current?.phase === "phase2_design_review";
+  const inWorkflowReview = current?.phase === "phase2_workflow_review";
+  const inScreenReview = current?.phase === "phase2_screen_review";
   const inWireframeReview = current?.phase === "phase2_wireframe_review";
+  const inAnyReview = inWorkflowReview || inScreenReview || inWireframeReview;
   const isComplete = current?.phase === "complete";
-  const canRollback = inDesignReview || inWireframeReview;
+  const canRollback = inAnyReview;
 
   async function submit() {
     const trimmed = input.trim();
@@ -68,9 +70,11 @@ export function ChatPanel() {
       : current
         ? inWireframeReview
           ? "Ask about the wireframe, request a content tweak, or change a screen..."
-          : inDesignReview
-            ? "Ask about the design or request a change..."
-            : "Ask a question or request an edit..."
+          : inScreenReview
+            ? "Ask about the screens or request a change..."
+            : inWorkflowReview
+              ? "Ask about the workflows or request a change..."
+              : "Ask a question or request an edit..."
         : "e.g. I want to build a simple todo app";
 
   return (
