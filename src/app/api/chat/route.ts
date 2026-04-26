@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { makeSSEResponse } from "@/lib/streaming";
 import {
-  NotImplementedInM1Error,
+  NoContractError,
   SessionBusyError,
   getSessionManager,
 } from "@/lib/session-manager";
@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
     } catch (err: unknown) {
       if (err instanceof SessionBusyError) {
         sse.error(err.message, err.code);
-      } else if (err instanceof NotImplementedInM1Error) {
+      } else if (err instanceof NoContractError) {
         sse.error(err.message, err.code);
       } else {
         const msg = err instanceof Error ? err.message : String(err);

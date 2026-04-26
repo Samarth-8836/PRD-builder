@@ -20,18 +20,14 @@ interface SendMessageInput {
  */
 export async function sendChatMessage(input: SendMessageInput): Promise<void> {
   const chat = useChatStore.getState();
-  const session = useSessionStore.getState();
   const doc = useDocumentStore.getState();
 
   if (!input.sessionId) {
     chat.reset();
     doc.reset();
   }
-  chat.append({
-    role: "user",
-    content: input.message,
-    ts: new Date().toISOString(),
-  });
+  chat.appendUser(input.message);
+  chat.setPendingAssistant("");
   chat.setStreaming(true);
 
   try {
@@ -48,6 +44,7 @@ export async function sendChatMessage(input: SendMessageInput): Promise<void> {
 
     await consumeSSE(response.body, dispatch);
   } finally {
+    useChatStore.getState().finalizePending();
     useChatStore.getState().setStreaming(false);
   }
 }
@@ -110,11 +107,10 @@ function dispatch(event: StreamEvent): void {
       });
       return;
     case "chunk":
-      chat.append({
-        role: "assistant",
-        content: event.text,
-        ts: new Date().toISOString(),
-      });
+      chat.appendChunk(event.text);
+      return;
+    case "assistant_message":
+      chat.setPendingAssistant(event.content);
       return;
     case "document_delta":
       if (event.name === "projectContract") doc.appendDelta(event.text);
@@ -124,20 +120,15 @@ function dispatch(event: StreamEvent): void {
         doc.setDocument(event.content, event.version);
       return;
     case "progress":
-      // No UI for progress in M1 — could surface a subtle indicator later.
+      // No UI for progress in M2 — could surface a subtle indicator later.
       return;
     case "phase":
-      // Forward-compat: phase events arrive starting in M3.
       if (session.current) {
         session.setCurrent({ ...session.current, phase: event.phase });
       }
       return;
     case "error":
-      chat.append({
-        role: "system",
-        content: `Error: ${event.message}`,
-        ts: new Date().toISOString(),
-      });
+      chat.appendSystem(`Error: ${event.message}`);
       return;
     case "complete":
       chat.setStreaming(false);

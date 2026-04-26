@@ -1,4 +1,6 @@
+import { buildContext } from "@/lib/context";
 import { parseTitle } from "@/lib/parsers";
+import type { Session } from "@/lib/storage";
 import { execute } from "./executor";
 
 /**
@@ -6,10 +8,21 @@ import { execute } from "./executor";
  * Runs in parallel with op-1-0 so the sidebar can label the session as soon
  * as possible — well before the long contract draft completes.
  */
-export async function runTitle(userInput: string, signal?: AbortSignal): Promise<string> {
-  const { value } = await execute({
+export async function runTitle(
+  userInput: string,
+  session: Session,
+  signal?: AbortSignal
+): Promise<string> {
+  const ctx = buildContext({
+    session,
+    userMessage: userInput,
     promptSlug: "phase1.title",
-    user: userInput,
+  });
+
+  const { value } = await execute({
+    system: ctx.system,
+    messages: ctx.messages,
+    correctiveHint: ctx.correctiveHint,
     parser: parseTitle,
     signal,
     maxAttempts: 2,

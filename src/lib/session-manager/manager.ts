@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { runFirstMessage, runTitle } from "@/lib/operations";
+import { runConversation, runFirstMessage, runTitle } from "@/lib/operations";
 import { type SSEWriter } from "@/lib/streaming";
 import {
   getStorage,
@@ -15,10 +15,10 @@ export class SessionBusyError extends Error {
   }
 }
 
-export class NotImplementedInM1Error extends Error {
-  readonly code = "NOT_IMPLEMENTED";
-  constructor(message: string) {
-    super(message);
+export class NoContractError extends Error {
+  readonly code = "NO_CONTRACT";
+  constructor(public sessionId: string) {
+    super(`Session ${sessionId} has no Project Contract yet`);
   }
 }
 
@@ -36,12 +36,16 @@ interface HandleMessageInput {
 }
 
 /**
- * Top-level coordinator. For M1 it owns one path: starting a new session
- * from a first-message and producing a Project Contract. Follow-up messages
- * (edits, questions) and Phase 2 stage runners arrive in later milestones.
+ * Top-level coordinator. As of M2 it owns two paths:
  *
- * The per-session in-memory lock rejects overlapping operations on the same
- * session rather than queuing them — matches the spec's "chat lock" idea.
+ *   - startSession: first-message draft (Phase 1 initial creation)
+ *   - handleMessage: follow-up conversation in Phase 1 (questions + edits)
+ *
+ * Phase 2 stage runners and rollback paths arrive in later milestones.
+ *
+ * The per-session in-memory busy lock rejects overlapping operations on
+ * the same session rather than queuing them, matching the spec's
+ * "chat lock" semantics.
  */
 export class SessionManager {
   private readonly busy = new Set<string>();
@@ -74,7 +78,7 @@ export class SessionManager {
 
     this.busy.add(id);
     try {
-      const titleTask = runTitle(trimmed, signal)
+      const titleTask = runTitle(trimmed, session, signal)
         .then(async (title) => {
           if (sse.isClosed()) return;
           const updated = await this.storage.setTitle(id, title);
@@ -86,7 +90,6 @@ export class SessionManager {
           });
         })
         .catch((err: unknown) => {
-          // Title generation failure is non-fatal; the session keeps "Untitled".
           // eslint-disable-next-line no-console
           console.warn("title generation failed:", err);
         });
@@ -111,18 +114,60 @@ export class SessionManager {
   }
 
   async handleMessage(input: HandleMessageInput): Promise<void> {
-    const { sessionId, sse } = input;
+    const { sessionId, message, sse, signal } = input;
+    const trimmed = message.trim();
+    if (!trimmed) {
+      sse.error("Message was empty", "EMPTY_MESSAGE");
+      return;
+    }
+
     if (this.busy.has(sessionId)) {
       throw new SessionBusyError(sessionId);
     }
-    const session = await this.storage.getSession(sessionId);
-    if (!session) {
-      sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
-      return;
+
+    this.busy.add(sessionId);
+    try {
+      const session = await this.storage.getSession(sessionId);
+      if (!session) {
+        sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
+        return;
+      }
+      if (!session.documents.projectContract) {
+        throw new NoContractError(sessionId);
+      }
+
+      // Append the user message to chat BEFORE the LLM call so it's
+      // persisted regardless of how the operation completes.
+      await this.storage.appendChat(sessionId, {
+        role: "user",
+        content: trimmed,
+        ts: new Date().toISOString(),
+      });
+
+      const refreshed = (await this.storage.getSession(sessionId))!;
+
+      sse.send({
+        type: "meta",
+        sessionId: refreshed.id,
+        title: refreshed.title,
+        phase: refreshed.phase,
+      });
+
+      const result = await runConversation({
+        session: refreshed,
+        userMessage: trimmed,
+        sse,
+        signal,
+      });
+
+      await this.storage.appendChat(sessionId, {
+        role: "assistant",
+        content: result.assistantMessage,
+        ts: new Date().toISOString(),
+      });
+    } finally {
+      this.busy.delete(sessionId);
     }
-    throw new NotImplementedInM1Error(
-      "Follow-up messages (edits, questions) arrive in M2. For now, start a new session by sending a message without a sessionId."
-    );
   }
 
   async listSessions(): Promise<SessionSummary[]> {

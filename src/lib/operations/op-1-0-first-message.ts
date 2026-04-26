@@ -1,3 +1,4 @@
+import { buildContext } from "@/lib/context";
 import { parseFirstMessage } from "@/lib/parsers";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Session } from "@/lib/storage";
@@ -22,11 +23,11 @@ export interface RunFirstMessageResult {
 /**
  * op-1-0: drafts a Project Contract from a one-line product idea.
  *
- * Streams the model's contract body progressively to the document panel
- * as it arrives. The summary is emitted at the end as a single chat chunk,
- * and a canonical `document` event is sent so the client has authoritative
- * final state (this also overwrites any partial deltas if a retry was
- * needed).
+ * Streams the contract body progressively to the document panel as it
+ * arrives (after the CONTRACT marker is detected). The summary is sent at
+ * the end as a single chat chunk, then a canonical `document` event with
+ * the parsed content overrides any partial deltas (important if a retry
+ * was needed mid-stream).
  */
 export async function runFirstMessage(
   input: RunFirstMessageInput
@@ -75,9 +76,16 @@ export async function runFirstMessage(
 
   sse.send({ type: "progress", op: "op-1-0", status: "started", note: "Drafting contract" });
 
-  const { value } = await execute({
+  const ctx = buildContext({
+    session,
+    userMessage: userInput,
     promptSlug: "phase1.first_message",
-    user: userInput,
+  });
+
+  const { value } = await execute({
+    system: ctx.system,
+    messages: ctx.messages,
+    correctiveHint: ctx.correctiveHint,
     parser: parseFirstMessage,
     signal,
     onDelta,
@@ -90,7 +98,7 @@ export async function runFirstMessage(
     value.contract.raw
   );
 
-  sse.send({ type: "chunk", text: value.summary });
+  sse.send({ type: "assistant_message", content: value.summary });
   sse.send({
     type: "document",
     name: "projectContract",

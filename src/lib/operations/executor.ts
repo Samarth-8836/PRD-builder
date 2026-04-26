@@ -1,4 +1,3 @@
-import { getPrompt, type PromptSlug } from "@/lib/prompts";
 import { type ChatMessage, streamCompletion } from "@/lib/llm/provider";
 import type { ModelRole } from "@/lib/llm/config";
 import type { ParseResult } from "@/lib/parsers";
@@ -9,19 +8,24 @@ export interface DeltaContext {
 }
 
 export interface ExecuteInput<T> {
-  promptSlug: PromptSlug;
-  user: string;
+  /** System prompt for the LLM. */
+  system: string;
+  /** User/assistant turns including the current user message. */
+  messages: ChatMessage[];
+  /** Parses the final accumulated text into a typed value. */
   parser: (text: string) => ParseResult<T>;
+  /** Optional corrective-hint generator used on parse failure. If present
+   *  AND maxAttempts > 1, the executor retries with the model's failed
+   *  output as an assistant turn followed by the corrective user message. */
+  correctiveHint?: (reason: string) => string;
   signal?: AbortSignal;
   role?: ModelRole;
   /** Maximum attempts including initial call. Default 2. */
   maxAttempts?: number;
-  /** Called on each token delta during streaming. Use it to emit progressive
-   *  events. The `attempt` field starts at 1 — only emit progressive
-   *  client-visible events on attempt 1 unless you want duplicate output. */
+  /** Streamed token callback. `attempt` starts at 1 — only emit
+   *  client-visible events on attempt 1 unless duplicate output is OK. */
   onDelta?: (delta: string, ctx: DeltaContext) => void;
-  /** Called when an attempt fails parsing and another attempt is about to
-   *  start. Use this to surface "retrying" UI affordance. */
+  /** Called when an attempt fails parsing and another attempt is starting. */
   onRetry?: (reason: string, attempt: number) => void;
 }
 
@@ -35,12 +39,17 @@ export interface ExecuteResult<T> {
  * The single point that calls the LLM for an operation. Streams the
  * response, accumulates the full text, runs the parser, and retries with a
  * corrective hint on parse failure (up to maxAttempts).
+ *
+ * Caller is responsible for assembling `system` and `messages` — typically
+ * via `buildContext` from the Context Builder.
  */
 export async function execute<T>(input: ExecuteInput<T>): Promise<ExecuteResult<T>> {
-  const prompt = getPrompt(input.promptSlug);
   const maxAttempts = input.maxAttempts ?? 2;
 
-  let messages: ChatMessage[] = buildMessages(prompt.system, prompt.fewShot, input.user);
+  let messages: ChatMessage[] = [
+    { role: "system", content: input.system },
+    ...input.messages,
+  ];
   let lastError = "";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -60,7 +69,7 @@ export async function execute<T>(input: ExecuteInput<T>): Promise<ExecuteResult<
     }
 
     lastError = parsed.error;
-    const canRetry = attempt < maxAttempts && Boolean(prompt.correctiveHint);
+    const canRetry = attempt < maxAttempts && Boolean(input.correctiveHint);
     if (!canRetry) break;
 
     input.onRetry?.(parsed.error, attempt + 1);
@@ -68,27 +77,9 @@ export async function execute<T>(input: ExecuteInput<T>): Promise<ExecuteResult<
     messages = [
       ...messages,
       { role: "assistant", content: accumulated },
-      { role: "user", content: prompt.correctiveHint!(parsed.error) },
+      { role: "user", content: input.correctiveHint!(parsed.error) },
     ];
   }
 
-  throw new Error(
-    `Operation ${input.promptSlug} failed after ${maxAttempts} attempts: ${lastError}`
-  );
-}
-
-function buildMessages(
-  system: string,
-  fewShot: { user: string; assistant: string }[] | undefined,
-  user: string
-): ChatMessage[] {
-  const out: ChatMessage[] = [{ role: "system", content: system }];
-  if (fewShot) {
-    for (const ex of fewShot) {
-      out.push({ role: "user", content: ex.user });
-      out.push({ role: "assistant", content: ex.assistant });
-    }
-  }
-  out.push({ role: "user", content: user });
-  return out;
+  throw new Error(`Operation failed after ${maxAttempts} attempts: ${lastError}`);
 }
