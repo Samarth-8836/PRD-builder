@@ -27,6 +27,18 @@ export interface SessionDocuments {
   screenInventory?: DocumentRecord;
 }
 
+/**
+ * Stage 2 artifact: the clickable wireframe. Stored as a flat map of
+ * filename -> file content (UTF-8 text). The viewer fetches files by name
+ * via /api/wireframe/[sessionId]/[filename]. Filenames include
+ * `index.html`, `data.js`, and `<screen-id>.html` for each screen.
+ */
+export interface WireframeArtifact {
+  version: number;
+  files: Record<string, string>;
+  updatedAt: string;
+}
+
 export interface Session {
   id: string;
   title: string;
@@ -44,14 +56,18 @@ export interface Session {
    *  Phase 2 documents at the moment of rollback so they can be restored
    *  if the user re-PASSes with an unchanged contract. */
   phase2Snapshot?: Phase2Snapshot;
+  /** Stage 2 (Wireframe) artifact. Set by the wireframe stage runner and
+   *  read by the file-serving API. */
+  wireframe?: WireframeArtifact;
 }
 
 export interface Phase2Snapshot {
   workflowMap?: DocumentRecord;
   screenInventory?: DocumentRecord;
+  wireframe?: WireframeArtifact;
   /** Phase the user was in at the moment of rollback (typically
-   *  phase2_design_review). The restore returns the session to this phase
-   *  if the contract is unchanged. */
+   *  phase2_design_review or phase2_wireframe_review). The restore
+   *  returns the session to this phase if the contract is unchanged. */
   phase: Phase;
   takenAt: string;
 }
@@ -81,4 +97,8 @@ export interface IStorage {
   /** Removes a document by name. Used during rollback to clear stale
    *  Phase 2 docs after they've been moved into phase2Snapshot. */
   clearDocument(id: string, name: keyof SessionDocuments): Promise<Session>;
+  /** Replaces the wireframe artifact entirely. Bumps version. Pass null
+   *  via clearWireframe to drop. */
+  setWireframe(id: string, files: Record<string, string>): Promise<Session>;
+  clearWireframe(id: string): Promise<Session>;
 }

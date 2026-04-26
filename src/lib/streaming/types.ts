@@ -1,6 +1,14 @@
 import type { Phase } from "@/lib/storage";
 
-export type DocumentName = "projectContract" | "workflowMap" | "screenInventory";
+/** Markdown-bodied documents that flow through document/document_delta events. */
+export type MarkdownDocumentName =
+  | "projectContract"
+  | "workflowMap"
+  | "screenInventory";
+
+/** All document tabs in the UI. Wireframe has no markdown body — it has
+ *  its own ready event and is rendered as an iframe instead. */
+export type DocumentName = MarkdownDocumentName | "wireframe";
 
 export type StreamEvent =
   | { type: "meta"; sessionId: string; title: string; phase: Phase }
@@ -10,13 +18,16 @@ export type StreamEvent =
    *  streamed (used to recover from a corrective-retry that produced
    *  different output than was streamed on attempt 1). */
   | { type: "assistant_message"; content: string }
-  | { type: "document_delta"; name: DocumentName; text: string }
+  | { type: "document_delta"; name: MarkdownDocumentName; text: string }
   | {
       type: "document";
-      name: DocumentName;
+      name: MarkdownDocumentName;
       version: number;
       content: string;
     }
+  /** Wireframe finished generating. The viewer should reload the iframe
+   *  to pick up the new version. */
+  | { type: "wireframe_ready"; version: number; files: string[] }
   | { type: "phase"; phase: Phase }
   | { type: "progress"; op: string; status: "started" | "completed" | "failed"; note?: string }
   | {

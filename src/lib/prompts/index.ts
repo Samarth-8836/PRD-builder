@@ -39,6 +39,14 @@ import {
   WORKFLOW_DISCOVERY_EXAMPLE_USER,
   WORKFLOW_DISCOVERY_SYSTEM,
 } from "./phase2";
+import {
+  DUMMY_DATA_CORRECTIVE_HINT,
+  DUMMY_DATA_SYSTEM,
+  SCREEN_HTML_CORRECTIVE_HINT,
+  SCREEN_HTML_SYSTEM,
+  WIREFRAME_SHELL_CORRECTIVE_HINT,
+  WIREFRAME_SHELL_SYSTEM,
+} from "./wireframe";
 
 export type PromptSlug =
   | "phase1.first_message"
@@ -51,7 +59,10 @@ export type PromptSlug =
   | "phase2.nav_validate"
   | "phase2.screen_correct"
   | "phase2.conversation"
-  | "phase2.drift_check";
+  | "phase2.drift_check"
+  | "phase2.dummy_data"
+  | "phase2.wireframe_shell"
+  | "phase2.screen_html";
 
 export interface PromptSpec {
   system: string;
@@ -144,6 +155,18 @@ const REGISTRY: Record<PromptSlug, PromptSpec> = {
       },
     ],
     correctiveHint: DRIFT_CHECK_CORRECTIVE_HINT,
+  },
+  "phase2.dummy_data": {
+    system: DUMMY_DATA_SYSTEM,
+    correctiveHint: DUMMY_DATA_CORRECTIVE_HINT,
+  },
+  "phase2.wireframe_shell": {
+    system: WIREFRAME_SHELL_SYSTEM,
+    correctiveHint: WIREFRAME_SHELL_CORRECTIVE_HINT,
+  },
+  "phase2.screen_html": {
+    system: SCREEN_HTML_SYSTEM,
+    correctiveHint: SCREEN_HTML_CORRECTIVE_HINT,
   },
 };
 

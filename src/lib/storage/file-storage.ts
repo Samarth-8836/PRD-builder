@@ -154,6 +154,30 @@ export class FileStorage implements IStorage {
     return session;
   }
 
+  async setWireframe(
+    id: string,
+    files: Record<string, string>
+  ): Promise<Session> {
+    const session = await this.requireSession(id);
+    const prevVersion = session.wireframe?.version ?? 0;
+    session.wireframe = {
+      version: prevVersion + 1,
+      files,
+      updatedAt: new Date().toISOString(),
+    };
+    session.updatedAt = session.wireframe.updatedAt;
+    await this.writeSession(session);
+    return session;
+  }
+
+  async clearWireframe(id: string): Promise<Session> {
+    const session = await this.requireSession(id);
+    delete session.wireframe;
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
   private pathFor(id: string): string {
     return path.join(this.root, `${id}.json`);
   }

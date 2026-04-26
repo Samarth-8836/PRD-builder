@@ -1,6 +1,6 @@
 "use client";
 
-import type { DocumentName, StreamEvent } from "@/lib/streaming";
+import type { MarkdownDocumentName, StreamEvent } from "@/lib/streaming";
 import { useChatStore } from "@/stores/chat";
 import { useDocumentStore } from "@/stores/document";
 import { useSessionStore } from "@/stores/session";
@@ -62,6 +62,26 @@ export async function validatePhase1(sessionId: string): Promise<void> {
       throw new Error(
         `Validate request failed (${response.status}): ${detail.slice(0, 200)}`
       );
+    }
+    await consumeSSE(response.body, dispatch);
+  } finally {
+    useChatStore.getState().setStreaming(false);
+  }
+}
+
+export async function approveDesign(sessionId: string): Promise<void> {
+  const chat = useChatStore.getState();
+  useSessionStore.getState().setDrift(null);
+  chat.setStreaming(true);
+  try {
+    const response = await fetch("/api/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    });
+    if (!response.ok || !response.body) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`Approve failed (${response.status}): ${detail.slice(0, 200)}`);
     }
     await consumeSSE(response.body, dispatch);
   } finally {
@@ -162,10 +182,13 @@ function dispatch(event: StreamEvent): void {
       chat.setPendingAssistant(event.content);
       return;
     case "document_delta":
-      doc.appendDelta(event.name as DocumentName, event.text);
+      doc.appendDelta(event.name as MarkdownDocumentName, event.text);
       return;
     case "document":
-      doc.setDocument(event.name as DocumentName, event.content, event.version);
+      doc.setDocument(event.name as MarkdownDocumentName, event.content, event.version);
+      return;
+    case "wireframe_ready":
+      doc.setWireframe(event.version, event.files);
       return;
     case "progress":
       if (event.status === "completed" && event.note) {
@@ -266,5 +289,10 @@ export async function loadSession(id: string): Promise<void> {
       s.documents.screenInventory.version
     );
   }
+  if (s.wireframe) {
+    doc.setWireframe(s.wireframe.version, Object.keys(s.wireframe.files));
+  }
+  // setWireframe auto-switches the tab; restore to contract for a
+  // predictable landing on session load.
   doc.setActiveTab("projectContract");
 }

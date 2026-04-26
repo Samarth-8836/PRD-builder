@@ -18,6 +18,7 @@ import {
 } from "@/lib/storage";
 import { runCascade } from "./cascade";
 import { runDesignStage } from "./design-stage";
+import { runWireframeStage } from "./wireframe-stage";
 
 export class SessionBusyError extends Error {
   readonly code = "SESSION_BUSY";
@@ -60,6 +61,12 @@ interface CompletePhase1Input {
 }
 
 interface RollbackInput {
+  sessionId: string;
+  sse: SSEWriter;
+  signal?: AbortSignal;
+}
+
+interface ApproveDesignInput {
   sessionId: string;
   sse: SSEWriter;
   signal?: AbortSignal;
@@ -393,6 +400,17 @@ export class SessionManager {
         content: snapshot.screenInventory.content,
       });
     }
+    if (snapshot.wireframe) {
+      const updated = await this.storage.setWireframe(
+        session.id,
+        snapshot.wireframe.files
+      );
+      sse.send({
+        type: "wireframe_ready",
+        version: updated.wireframe!.version,
+        files: Object.keys(snapshot.wireframe.files),
+      });
+    }
     await this.storage.setPhase2Snapshot(session.id, null);
     const final = await this.storage.setPhase(session.id, snapshot.phase);
     sse.send({ type: "phase", phase: final.phase });
@@ -402,6 +420,48 @@ export class SessionManager {
       status: "completed",
       note: "Restored your previous Phase 2 work — the contract is unchanged",
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Phase 2 design review -> wireframe stage (Approve)
+  // ---------------------------------------------------------------------
+  async approveDesign(input: ApproveDesignInput): Promise<void> {
+    const { sessionId, sse, signal } = input;
+    if (this.busy.has(sessionId)) throw new SessionBusyError(sessionId);
+
+    this.busy.add(sessionId);
+    try {
+      const session = await this.storage.getSession(sessionId);
+      if (!session) {
+        sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
+        return;
+      }
+      if (session.phase !== "phase2_design_review") {
+        throw new WrongPhaseError(
+          `Cannot approve from ${session.phase}; approval is only available from phase2_design_review`
+        );
+      }
+      if (
+        !session.documents.workflowMap ||
+        !session.documents.screenInventory ||
+        !session.documents.projectContract
+      ) {
+        throw new WrongPhaseError(
+          "Cannot approve — Phase 2 documents are missing"
+        );
+      }
+
+      sse.send({
+        type: "meta",
+        sessionId: session.id,
+        title: session.title,
+        phase: session.phase,
+      });
+
+      await runWireframeStage({ session, sse, signal });
+    } finally {
+      this.busy.delete(sessionId);
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -431,6 +491,7 @@ export class SessionManager {
       const snapshot: Phase2Snapshot = {
         workflowMap: session.documents.workflowMap,
         screenInventory: session.documents.screenInventory,
+        wireframe: session.wireframe,
         phase: session.phase,
         takenAt: new Date().toISOString(),
       };
@@ -443,6 +504,9 @@ export class SessionManager {
       }
       if (session.documents.screenInventory) {
         await this.storage.clearDocument(sessionId, "screenInventory");
+      }
+      if (session.wireframe) {
+        await this.storage.clearWireframe(sessionId);
       }
 
       const updated = await this.storage.setPhase(sessionId, "phase1");
@@ -488,8 +552,13 @@ function contractsMatch(session: Session, snapshot: Phase2Snapshot): boolean {
   if (!baseline || !current) return false;
   // Snapshot exists and the user is doing Done again; phase2Snapshot is
   // present, meaning a rollback happened. If the contract is unchanged
-  // since the original PASS, restore.
-  return baseline === current && snapshot.phase === "phase2_design_review";
+  // since the original PASS, restore — back to whichever Phase 2 review
+  // state the user was in (design or wireframe).
+  return (
+    baseline === current &&
+    (snapshot.phase === "phase2_design_review" ||
+      snapshot.phase === "phase2_wireframe_review")
+  );
 }
 
 let cached: SessionManager | null = null;

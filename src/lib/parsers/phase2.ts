@@ -175,6 +175,85 @@ function parseNavList(raw: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Recovers ScreenSpec[] from the rendered Screen Inventory markdown
+ * produced by formatScreenInventory (for handing off into the wireframe
+ * stage where the original ScreenSpec[] is no longer in memory).
+ *
+ * The rendered format is:
+ *
+ *   # Screen Inventory
+ *
+ *   ## `home`
+ *
+ *   **Purpose.** ...
+ *
+ *   **Shows.** ...
+ *
+ *   **Nav.** comma, list — or "_(none)_"
+ */
+const RENDERED_HEADING_RE = /^##\s+`([a-z][a-z0-9-]*)`\s*$/m;
+const RENDERED_PURPOSE_RE = /\*\*Purpose\.\*\*\s+(.+?)\s*$/m;
+const RENDERED_SHOWS_RE = /\*\*Shows\.\*\*\s+(.+?)\s*$/m;
+const RENDERED_NAV_RE = /\*\*Nav\.\*\*\s+(.+?)\s*$/m;
+
+export function parseScreenInventoryDoc(input: string): ParseResult<ScreenSpec[]> {
+  if (!input.trim()) return fail("Screen inventory was empty");
+
+  const blocks: string[] = [];
+  let remaining = input;
+  while (true) {
+    const headingIdx = remaining.search(RENDERED_HEADING_RE);
+    if (headingIdx === -1) break;
+    remaining = remaining.slice(headingIdx);
+    const nextIdx = remaining.slice(1).search(/^##\s+`/m);
+    if (nextIdx === -1) {
+      blocks.push(remaining);
+      break;
+    }
+    blocks.push(remaining.slice(0, nextIdx + 1));
+    remaining = remaining.slice(nextIdx + 1);
+  }
+
+  const screens: ScreenSpec[] = [];
+  for (const block of blocks) {
+    const head = block.match(RENDERED_HEADING_RE);
+    if (!head) continue;
+    const id = head[1]!;
+    const purpose = block.match(RENDERED_PURPOSE_RE)?.[1]?.trim() ?? "";
+    const shows = block.match(RENDERED_SHOWS_RE)?.[1]?.trim() ?? "";
+    const navRaw = block.match(RENDERED_NAV_RE)?.[1]?.trim() ?? "";
+    const nav =
+      navRaw === "_(none)_" || navRaw === "" || navRaw === "-"
+        ? []
+        : navRaw
+            .split(",")
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean);
+    if (!purpose || !shows) {
+      return fail(`Screen "${id}" missing purpose or shows in rendered inventory`);
+    }
+    screens.push({ id, purpose, shows, nav });
+  }
+
+  if (screens.length < 2) {
+    return fail(`Expected at least 2 screens in rendered inventory; found ${screens.length}`);
+  }
+
+  const idSet = new Set(screens.map((s) => s.id));
+  for (const s of screens) {
+    for (const target of s.nav) {
+      if (!idSet.has(target)) {
+        return fail(
+          `Screen "${s.id}" navigates to "${target}", which isn't a defined screen id`
+        );
+      }
+    }
+  }
+
+  return ok(screens);
+}
+
 // ---------------------------------------------------------------------------
 // Nav validation (output of phase2.nav_validate)
 // ---------------------------------------------------------------------------

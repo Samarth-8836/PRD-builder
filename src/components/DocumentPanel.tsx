@@ -2,7 +2,8 @@
 
 import { Markdown } from "./Markdown";
 import { PhaseIndicator } from "./PhaseIndicator";
-import { validatePhase1 } from "@/hooks/useSSE";
+import { WireframeViewer } from "./WireframeViewer";
+import { approveDesign, validatePhase1 } from "@/hooks/useSSE";
 import type { DocumentName } from "@/lib/streaming";
 import { useChatStore } from "@/stores/chat";
 import { useDocumentStore } from "@/stores/document";
@@ -12,24 +13,44 @@ const TAB_LABELS: Record<DocumentName, string> = {
   projectContract: "Project Contract",
   workflowMap: "Workflow Map",
   screenInventory: "Screen Inventory",
+  wireframe: "Wireframe",
 };
 
-const TAB_ORDER: DocumentName[] = ["projectContract", "workflowMap", "screenInventory"];
+const TAB_ORDER: DocumentName[] = [
+  "projectContract",
+  "workflowMap",
+  "screenInventory",
+  "wireframe",
+];
 
 export function DocumentPanel() {
   const docs = useDocumentStore();
   const current = useSessionStore((s) => s.current);
   const streaming = useChatStore((s) => s.streaming);
 
-  const activeDoc = docs[docs.activeTab];
   const hasContract = docs.projectContract.content.length > 0;
   const showDoneButton =
     hasContract && current?.phase === "phase1" && docs.projectContract.finalized;
+  const showApproveButton =
+    current?.phase === "phase2_design_review" &&
+    docs.workflowMap.content.length > 0 &&
+    docs.screenInventory.content.length > 0;
 
   async function handleDone() {
     if (!current) return;
     try {
       await validatePhase1(current.id);
+    } catch (err) {
+      useChatStore.getState().appendSystem(
+        `Error: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  async function handleApprove() {
+    if (!current) return;
+    try {
+      await approveDesign(current.id);
     } catch (err) {
       useChatStore.getState().appendSystem(
         `Error: ${err instanceof Error ? err.message : String(err)}`
@@ -63,32 +84,62 @@ export function DocumentPanel() {
               Done - Validate &amp; Complete Phase 1
             </button>
           )}
+          {showApproveButton && (
+            <button
+              onClick={() => void handleApprove()}
+              disabled={streaming}
+              className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
+            >
+              Approve → Generate Wireframe
+            </button>
+          )}
         </div>
         <DocumentTabs />
       </header>
-      <div className="flex-1 overflow-y-auto px-6 py-5">
-        {activeDoc.content.length > 0 ? (
-          <Markdown>{activeDoc.content}</Markdown>
-        ) : (
-          <div className="text-sm text-neutral-600">
-            {emptyMessageFor(docs.activeTab)}
-          </div>
-        )}
+      <DocumentBody />
+    </div>
+  );
+}
+
+function DocumentBody() {
+  const docs = useDocumentStore();
+
+  if (docs.activeTab === "wireframe") {
+    return (
+      <div className="flex-1 overflow-hidden p-4">
+        <WireframeViewer />
       </div>
+    );
+  }
+
+  const activeDoc = docs[docs.activeTab];
+  return (
+    <div className="flex-1 overflow-y-auto px-6 py-5">
+      {activeDoc.content.length > 0 ? (
+        <Markdown>{activeDoc.content}</Markdown>
+      ) : (
+        <div className="text-sm text-neutral-600">
+          {emptyMessageFor(docs.activeTab)}
+        </div>
+      )}
     </div>
   );
 }
 
 function DocumentTabs() {
   const docs = useDocumentStore();
-  const visibleTabs = TAB_ORDER.filter((name) => docs[name].content.length > 0);
+  const visibleTabs = TAB_ORDER.filter((name) => {
+    if (name === "wireframe") return docs.wireframe.ready;
+    return docs[name].content.length > 0;
+  });
   if (visibleTabs.length <= 1) return null;
 
   return (
     <div className="mt-3 flex gap-1 border-b border-neutral-800 -mb-3">
       {visibleTabs.map((name) => {
         const isActive = docs.activeTab === name;
-        const version = docs[name].version;
+        const version =
+          name === "wireframe" ? docs.wireframe.version : docs[name].version;
         return (
           <button
             key={name}
@@ -120,5 +171,7 @@ function emptyMessageFor(name: DocumentName): string {
       return "The Workflow Map will appear here after Phase 1 is validated.";
     case "screenInventory":
       return "The Screen Inventory will appear here after Phase 1 is validated.";
+    case "wireframe":
+      return "The Wireframe will appear here after the design is approved.";
   }
 }

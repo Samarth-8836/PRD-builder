@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import type { DocumentName } from "@/lib/streaming";
+import type { DocumentName, MarkdownDocumentName } from "@/lib/streaming";
 
 interface DocumentState {
   content: string;
@@ -9,29 +9,41 @@ interface DocumentState {
   finalized: boolean;
 }
 
+interface WireframeState {
+  ready: boolean;
+  version: number;
+  files: string[];
+}
+
 interface DocumentStore {
   projectContract: DocumentState;
   workflowMap: DocumentState;
   screenInventory: DocumentState;
+  wireframe: WireframeState;
   activeTab: DocumentName;
   reset: () => void;
-  appendDelta: (name: DocumentName, text: string) => void;
-  setDocument: (name: DocumentName, content: string, version: number) => void;
+  appendDelta: (name: MarkdownDocumentName, text: string) => void;
+  setDocument: (name: MarkdownDocumentName, content: string, version: number) => void;
+  setWireframe: (version: number, files: string[]) => void;
+  clearWireframe: () => void;
   setActiveTab: (name: DocumentName) => void;
 }
 
 const empty = (): DocumentState => ({ content: "", version: 0, finalized: false });
+const emptyWireframe = (): WireframeState => ({ ready: false, version: 0, files: [] });
 
 export const useDocumentStore = create<DocumentStore>((set) => ({
   projectContract: empty(),
   workflowMap: empty(),
   screenInventory: empty(),
+  wireframe: emptyWireframe(),
   activeTab: "projectContract",
   reset: () =>
     set({
       projectContract: empty(),
       workflowMap: empty(),
       screenInventory: empty(),
+      wireframe: emptyWireframe(),
       activeTab: "projectContract",
     }),
   appendDelta: (name, text) =>
@@ -50,5 +62,18 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
       if (!state[name].finalized) next.activeTab = name;
       return next;
     }),
+  setWireframe: (version, files) =>
+    set(() => ({
+      wireframe: { ready: true, version, files },
+      // Auto-switch to the wireframe tab when it first becomes ready.
+      activeTab: "wireframe",
+    })),
+  clearWireframe: () =>
+    set((state) => ({
+      wireframe: emptyWireframe(),
+      // If the user was viewing the wireframe tab, snap back to the
+      // contract tab so the panel doesn't sit on an empty viewer.
+      activeTab: state.activeTab === "wireframe" ? "projectContract" : state.activeTab,
+    })),
   setActiveTab: (activeTab) => set({ activeTab }),
 }));
