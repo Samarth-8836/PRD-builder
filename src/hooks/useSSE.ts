@@ -10,22 +10,18 @@ interface SendMessageInput {
   sessionId?: string;
 }
 
-/**
- * Posts a chat message to /api/chat and streams the SSE response,
- * dispatching each typed event to the right Zustand store.
- *
- * Returns when the server closes the stream (`complete` event or stream
- * end). Throws on transport errors. Per-event errors arrive as `error`
- * events and are surfaced as system chat messages — they don't reject.
- */
 export async function sendChatMessage(input: SendMessageInput): Promise<void> {
   const chat = useChatStore.getState();
   const doc = useDocumentStore.getState();
+  const session = useSessionStore.getState();
 
   if (!input.sessionId) {
     chat.reset();
     doc.reset();
   }
+  // Each new message clears any previous drift state — the user's about
+  // to issue something new, the prior banner is no longer the latest signal.
+  session.setDrift(null);
   chat.appendUser(input.message);
   chat.setPendingAssistant("");
   chat.setStreaming(true);
@@ -49,12 +45,9 @@ export async function sendChatMessage(input: SendMessageInput): Promise<void> {
   }
 }
 
-/**
- * Posts to /api/phase/complete and consumes the SSE stream of validation
- * events (and on PASS, the auto-triggered Phase 2 design stage events).
- */
 export async function validatePhase1(sessionId: string): Promise<void> {
   const chat = useChatStore.getState();
+  useSessionStore.getState().setDrift(null);
   chat.setStreaming(true);
 
   try {
@@ -71,6 +64,35 @@ export async function validatePhase1(sessionId: string): Promise<void> {
       );
     }
     await consumeSSE(response.body, dispatch);
+  } finally {
+    useChatStore.getState().setStreaming(false);
+  }
+}
+
+export async function rollbackToPhase1(sessionId: string): Promise<void> {
+  const chat = useChatStore.getState();
+  chat.setStreaming(true);
+  try {
+    const response = await fetch("/api/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    });
+    if (!response.ok || !response.body) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `Rollback failed (${response.status}): ${detail.slice(0, 200)}`
+      );
+    }
+    await consumeSSE(response.body, dispatch);
+    // After rollback, the doc panel should clear Phase 2 docs locally too.
+    useDocumentStore.getState().reset();
+    if (useSessionStore.getState().current) {
+      // Re-fetch contract from storage to re-populate the panel.
+      const id = useSessionStore.getState().current!.id;
+      await loadSession(id);
+    }
+    useSessionStore.getState().setDrift(null);
   } finally {
     useChatStore.getState().setStreaming(false);
   }
@@ -146,11 +168,10 @@ function dispatch(event: StreamEvent): void {
       doc.setDocument(event.name as DocumentName, event.content, event.version);
       return;
     case "progress":
-      // Surface "completed" milestones as system chat messages so the
-      // user sees stage progress. "started" notes are silent — too
-      // noisy to render every sub-step kickoff.
       if (event.status === "completed" && event.note) {
         chat.appendSystem(event.note);
+      } else if (event.status === "failed" && event.note) {
+        chat.appendSystem(`${event.op} failed: ${event.note}`);
       }
       return;
     case "phase":
@@ -169,6 +190,14 @@ function dispatch(event: StreamEvent): void {
       chat.appendSystem(text);
       return;
     }
+    case "drift":
+      session.setDrift({
+        classification: event.classification,
+        driftType: event.driftType,
+        reason: event.reason,
+        scope: event.scope,
+      });
+      return;
     case "error":
       chat.appendSystem(`Error: ${event.message}`);
       return;
@@ -211,6 +240,7 @@ export async function loadSession(id: string): Promise<void> {
     title: s.title,
     phase: s.phase,
   });
+  useSessionStore.getState().setDrift(null);
   useChatStore.getState().setMessages(s.chat);
 
   const doc = useDocumentStore.getState();
@@ -236,6 +266,5 @@ export async function loadSession(id: string): Promise<void> {
       s.documents.screenInventory.version
     );
   }
-  // Reset to the contract tab so the user lands somewhere familiar.
   doc.setActiveTab("projectContract");
 }

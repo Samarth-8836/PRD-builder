@@ -36,10 +36,24 @@ export interface Session {
   documents: SessionDocuments;
   chat: ChatMessage[];
   /** Frozen baseline of the Project Contract at the moment of Phase 1 PASS.
-   *  Used in M5+ to detect rollback equivalence (if the post-rollback
-   *  contract matches this snapshot, the suspended Phase 2 work can be
-   *  restored as-is rather than regenerated). */
+   *  Used to detect rollback equivalence (if the post-rollback contract
+   *  matches this baseline, the suspended Phase 2 work can be restored
+   *  as-is rather than regenerated). */
   contractSnapshot?: string;
+  /** Saved on rollback from Phase 2 review back to Phase 1. Holds the
+   *  Phase 2 documents at the moment of rollback so they can be restored
+   *  if the user re-PASSes with an unchanged contract. */
+  phase2Snapshot?: Phase2Snapshot;
+}
+
+export interface Phase2Snapshot {
+  workflowMap?: DocumentRecord;
+  screenInventory?: DocumentRecord;
+  /** Phase the user was in at the moment of rollback (typically
+   *  phase2_design_review). The restore returns the session to this phase
+   *  if the contract is unchanged. */
+  phase: Phase;
+  takenAt: string;
 }
 
 export interface SessionSummary {
@@ -63,4 +77,8 @@ export interface IStorage {
   ): Promise<Session>;
   setPhase(id: string, phase: Phase): Promise<Session>;
   setContractSnapshot(id: string, snapshot: string | null): Promise<Session>;
+  setPhase2Snapshot(id: string, snapshot: Phase2Snapshot | null): Promise<Session>;
+  /** Removes a document by name. Used during rollback to clear stale
+   *  Phase 2 docs after they've been moved into phase2Snapshot. */
+  clearDocument(id: string, name: keyof SessionDocuments): Promise<Session>;
 }

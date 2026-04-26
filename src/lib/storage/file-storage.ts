@@ -4,6 +4,7 @@ import {
   type ChatMessage,
   type IStorage,
   type Phase,
+  type Phase2Snapshot,
   type Session,
   type SessionDocuments,
   type SessionSummary,
@@ -128,6 +129,26 @@ export class FileStorage implements IStorage {
     const session = await this.requireSession(id);
     if (snapshot === null) delete session.contractSnapshot;
     else session.contractSnapshot = snapshot;
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
+  async setPhase2Snapshot(
+    id: string,
+    snapshot: Phase2Snapshot | null
+  ): Promise<Session> {
+    const session = await this.requireSession(id);
+    if (snapshot === null) delete session.phase2Snapshot;
+    else session.phase2Snapshot = snapshot;
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
+  async clearDocument(id: string, name: keyof SessionDocuments): Promise<Session> {
+    const session = await this.requireSession(id);
+    delete session.documents[name];
     session.updatedAt = new Date().toISOString();
     await this.writeSession(session);
     return session;

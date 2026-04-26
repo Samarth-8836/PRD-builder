@@ -25,6 +25,13 @@ export type StreamEvent =
       issues: string[];
       suggestions: string[];
     }
+  | {
+      type: "drift";
+      classification: "COMPATIBLE" | "FLAG" | "DRIFT";
+      driftType?: string;
+      reason: string;
+      scope?: string;
+    }
   | { type: "error"; message: string; code?: string }
   | { type: "complete" };
 

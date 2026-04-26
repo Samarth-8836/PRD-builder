@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import {
   NoContractToValidateError,
   runConversation,
+  runDriftCheck,
   runFirstMessage,
+  runPhase2Conversation,
   runTitle,
   runValidate,
 } from "@/lib/operations";
@@ -10,9 +12,11 @@ import { type SSEWriter } from "@/lib/streaming";
 import {
   getStorage,
   type IStorage,
+  type Phase2Snapshot,
   type Session,
   type SessionSummary,
 } from "@/lib/storage";
+import { runCascade } from "./cascade";
 import { runDesignStage } from "./design-stage";
 
 export class SessionBusyError extends Error {
@@ -26,6 +30,13 @@ export class NoContractError extends Error {
   readonly code = "NO_CONTRACT";
   constructor(public sessionId: string) {
     super(`Session ${sessionId} has no Project Contract yet`);
+  }
+}
+
+export class WrongPhaseError extends Error {
+  readonly code = "WRONG_PHASE";
+  constructor(message: string) {
+    super(message);
   }
 }
 
@@ -48,21 +59,31 @@ interface CompletePhase1Input {
   signal?: AbortSignal;
 }
 
+interface RollbackInput {
+  sessionId: string;
+  sse: SSEWriter;
+  signal?: AbortSignal;
+}
+
 /**
- * Top-level coordinator. As of M3 it owns three paths:
+ * Top-level coordinator. Routes by phase:
  *
- *   - startSession: first-message draft (Phase 1 initial creation)
- *   - handleMessage: follow-up conversation in Phase 1 (questions + edits).
- *     If the session was in phase1_complete and the user produces an edit,
- *     phase is reset back to phase1 (the prior validation no longer holds).
- *   - completePhase1: validates the contract and transitions to
- *     phase1_complete on PASS.
+ *   - phase1 / phase1_complete: Phase 1 conversation (questions + edits)
+ *   - phase2_design_review:     Phase 2 review chat (questions, COMPATIBLE
+ *                               cascades, drift detection)
+ *   - phase2_design_running:    rejected — stage is mid-flight
+ *
+ * Plus startSession (Phase 1 first-message), completePhase1 (validate +
+ * auto-advance), and rollbackToPhase1 (snapshot Phase 2 state and return).
  */
 export class SessionManager {
   private readonly busy = new Set<string>();
 
   constructor(private readonly storage: IStorage = getStorage()) {}
 
+  // ---------------------------------------------------------------------
+  // Phase 1: starting a session
+  // ---------------------------------------------------------------------
   async startSession(input: StartSessionInput): Promise<void> {
     const { firstMessage, sse, signal } = input;
     const trimmed = firstMessage.trim();
@@ -124,6 +145,9 @@ export class SessionManager {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Phase-aware chat router
+  // ---------------------------------------------------------------------
   async handleMessage(input: HandleMessageInput): Promise<void> {
     const { sessionId, message, sse, signal } = input;
     const trimmed = message.trim();
@@ -147,14 +171,13 @@ export class SessionManager {
         throw new NoContractError(sessionId);
       }
 
+      // Append the user message FIRST so it's persisted no matter what.
       await this.storage.appendChat(sessionId, {
         role: "user",
         content: trimmed,
         ts: new Date().toISOString(),
       });
-
       const refreshed = (await this.storage.getSession(sessionId))!;
-
       sse.send({
         type: "meta",
         sessionId: refreshed.id,
@@ -162,33 +185,126 @@ export class SessionManager {
         phase: refreshed.phase,
       });
 
-      const result = await runConversation({
-        session: refreshed,
-        userMessage: trimmed,
-        sse,
-        signal,
-      });
-
-      await this.storage.appendChat(sessionId, {
-        role: "assistant",
-        content: result.assistantMessage,
-        ts: new Date().toISOString(),
-      });
-
-      // If this edit mutated a previously-validated contract, the prior
-      // validation no longer holds — reset phase to phase1 so the user
-      // re-runs Done. Question mode does not change the contract, so it
-      // doesn't reset.
-      if (result.mode === "edit" && refreshed.phase === "phase1_complete") {
-        const reset = await this.storage.setPhase(sessionId, "phase1");
-        await this.storage.setContractSnapshot(sessionId, null);
-        sse.send({ type: "phase", phase: reset.phase });
+      switch (refreshed.phase) {
+        case "phase1":
+        case "phase1_complete":
+          await this.handlePhase1Chat(refreshed, trimmed, sse, signal);
+          return;
+        case "phase2_design_review":
+          await this.handlePhase2ReviewChat(refreshed, trimmed, sse, signal);
+          return;
+        case "phase2_design_running":
+        case "phase2_wireframe_running":
+          throw new SessionBusyError(sessionId);
+        case "phase2_wireframe_review":
+        case "complete":
+          throw new WrongPhaseError(
+            `Chat in ${refreshed.phase} arrives in a later milestone`
+          );
       }
     } finally {
       this.busy.delete(sessionId);
     }
   }
 
+  private async handlePhase1Chat(
+    session: Session,
+    message: string,
+    sse: SSEWriter,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const result = await runConversation({
+      session,
+      userMessage: message,
+      sse,
+      signal,
+    });
+
+    await this.storage.appendChat(session.id, {
+      role: "assistant",
+      content: result.assistantMessage,
+      ts: new Date().toISOString(),
+    });
+
+    // If the contract was edited while the session sat in phase1_complete,
+    // the prior validation no longer holds. Reset to phase1.
+    if (result.mode === "edit" && session.phase === "phase1_complete") {
+      const reset = await this.storage.setPhase(session.id, "phase1");
+      await this.storage.setContractSnapshot(session.id, null);
+      sse.send({ type: "phase", phase: reset.phase });
+    }
+  }
+
+  private async handlePhase2ReviewChat(
+    session: Session,
+    message: string,
+    sse: SSEWriter,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const conv = await runPhase2Conversation({
+      session,
+      userMessage: message,
+      signal,
+    });
+
+    if (conv.mode === "question") {
+      sse.send({ type: "assistant_message", content: conv.answer });
+      await this.storage.appendChat(session.id, {
+        role: "assistant",
+        content: conv.answer,
+        ts: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // change mode — emit summary, run drift check, then either cascade or block.
+    sse.send({ type: "assistant_message", content: conv.summary });
+    await this.storage.appendChat(session.id, {
+      role: "assistant",
+      content: conv.summary,
+      ts: new Date().toISOString(),
+    });
+
+    const drift = await runDriftCheck({
+      contract: session.documents.projectContract!.content,
+      changeDescription: conv.description,
+      signal,
+    });
+
+    sse.send({
+      type: "drift",
+      classification: drift.classification,
+      driftType: drift.type,
+      reason: drift.reason,
+      scope: conv.scope,
+    });
+
+    if (drift.classification === "DRIFT") {
+      // Block. The frontend renders a red banner and locks the chat
+      // until rollback. No doc changes here.
+      return;
+    }
+
+    if (drift.classification === "FLAG") {
+      // Borderline. Surface but do not cascade. The frontend renders a
+      // yellow banner; the user can choose to roll back to Phase 1 or
+      // re-send the request with a clearer scope.
+      return;
+    }
+
+    // COMPATIBLE — run the cascade.
+    await runCascade({
+      session,
+      sse,
+      signal,
+      scope: conv.scope,
+      description: conv.description,
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Phase 1 -> Phase 2 gate (validate + auto-design)
+  // ---------------------------------------------------------------------
   async completePhase1(input: CompletePhase1Input): Promise<void> {
     const { sessionId, sse, signal } = input;
 
@@ -223,18 +339,135 @@ export class SessionManager {
         }
         throw err;
       }
+      if (validateResult.status !== "PASS") return;
 
-      if (validateResult.status === "PASS") {
-        // Auto-advance to Phase 2 Stage 1 (Design) without further user
-        // input — per the spec, "Phase 1 PASS is consent."
-        const refreshed = (await this.storage.getSession(sessionId))!;
-        await runDesignStage({ session: refreshed, sse, signal });
+      const refreshed = (await this.storage.getSession(sessionId))!;
+
+      // Restore-from-snapshot: if the user previously rolled back from
+      // Phase 2 review and the post-rollback contract is byte-identical
+      // to the pre-rollback contract, the saved Phase 2 work is still
+      // valid. Restore it instead of regenerating.
+      const snapshot = refreshed.phase2Snapshot;
+      if (snapshot && contractsMatch(refreshed, snapshot)) {
+        await this.restorePhase2(refreshed, snapshot, sse);
+        return;
       }
+      // Different contract -> clear any stale snapshot before regen.
+      if (snapshot) {
+        await this.storage.setPhase2Snapshot(sessionId, null);
+      }
+      await runDesignStage({ session: refreshed, sse, signal });
     } finally {
       this.busy.delete(sessionId);
     }
   }
 
+  private async restorePhase2(
+    session: Session,
+    snapshot: Phase2Snapshot,
+    sse: SSEWriter
+  ): Promise<void> {
+    if (snapshot.workflowMap) {
+      const updated = await this.storage.setDocument(
+        session.id,
+        "workflowMap",
+        snapshot.workflowMap.content
+      );
+      sse.send({
+        type: "document",
+        name: "workflowMap",
+        version: updated.documents.workflowMap!.version,
+        content: snapshot.workflowMap.content,
+      });
+    }
+    if (snapshot.screenInventory) {
+      const updated = await this.storage.setDocument(
+        session.id,
+        "screenInventory",
+        snapshot.screenInventory.content
+      );
+      sse.send({
+        type: "document",
+        name: "screenInventory",
+        version: updated.documents.screenInventory!.version,
+        content: snapshot.screenInventory.content,
+      });
+    }
+    await this.storage.setPhase2Snapshot(session.id, null);
+    const final = await this.storage.setPhase(session.id, snapshot.phase);
+    sse.send({ type: "phase", phase: final.phase });
+    sse.send({
+      type: "progress",
+      op: "phase2.restore",
+      status: "completed",
+      note: "Restored your previous Phase 2 work — the contract is unchanged",
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Rollback Phase 2 -> Phase 1
+  // ---------------------------------------------------------------------
+  async rollbackToPhase1(input: RollbackInput): Promise<void> {
+    const { sessionId, sse, signal: _signal } = input;
+    if (this.busy.has(sessionId)) {
+      throw new SessionBusyError(sessionId);
+    }
+    this.busy.add(sessionId);
+    try {
+      const session = await this.storage.getSession(sessionId);
+      if (!session) {
+        sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
+        return;
+      }
+      if (
+        session.phase !== "phase2_design_review" &&
+        session.phase !== "phase2_wireframe_review"
+      ) {
+        throw new WrongPhaseError(
+          `Cannot roll back from ${session.phase}; rollback is only available from Phase 2 review states`
+        );
+      }
+
+      const snapshot: Phase2Snapshot = {
+        workflowMap: session.documents.workflowMap,
+        screenInventory: session.documents.screenInventory,
+        phase: session.phase,
+        takenAt: new Date().toISOString(),
+      };
+      await this.storage.setPhase2Snapshot(sessionId, snapshot);
+
+      // Clear the live Phase 2 docs so the doc panel doesn't show stale
+      // content while the user edits the contract.
+      if (session.documents.workflowMap) {
+        await this.storage.clearDocument(sessionId, "workflowMap");
+      }
+      if (session.documents.screenInventory) {
+        await this.storage.clearDocument(sessionId, "screenInventory");
+      }
+
+      const updated = await this.storage.setPhase(sessionId, "phase1");
+      sse.send({
+        type: "meta",
+        sessionId: updated.id,
+        title: updated.title,
+        phase: updated.phase,
+      });
+      sse.send({ type: "phase", phase: updated.phase });
+      sse.send({
+        type: "progress",
+        op: "phase2.rollback",
+        status: "completed",
+        note:
+          "Rolled back to Phase 1. Edit the contract and click Done to regenerate Phase 2 (or to restore your prior work if the contract is unchanged).",
+      });
+    } finally {
+      this.busy.delete(sessionId);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Read-only helpers
+  // ---------------------------------------------------------------------
   async listSessions(): Promise<SessionSummary[]> {
     return this.storage.listSessions();
   }
@@ -242,6 +475,21 @@ export class SessionManager {
   async getSession(id: string): Promise<Session | null> {
     return this.storage.getSession(id);
   }
+}
+
+function contractsMatch(session: Session, snapshot: Phase2Snapshot): boolean {
+  // Equivalence check: did the user end up with the same contract content
+  // after the rollback? We use the pre-rollback contractSnapshot (preserved
+  // from the original PASS) as the baseline and compare to the current
+  // contract content character-by-character (after trim, to ignore stray
+  // whitespace).
+  const baseline = session.contractSnapshot?.trim();
+  const current = session.documents.projectContract?.content.trim();
+  if (!baseline || !current) return false;
+  // Snapshot exists and the user is doing Done again; phase2Snapshot is
+  // present, meaning a rollback happened. If the contract is unchanged
+  // since the original PASS, restore.
+  return baseline === current && snapshot.phase === "phase2_design_review";
 }
 
 let cached: SessionManager | null = null;

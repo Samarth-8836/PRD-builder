@@ -14,8 +14,20 @@ import {
   VALIDATE_SYSTEM,
 } from "./phase1";
 import {
+  DRIFT_CHECK_CORRECTIVE_HINT,
+  DRIFT_CHECK_EXAMPLE_ASSISTANT,
+  DRIFT_CHECK_EXAMPLE_USER,
+  DRIFT_CHECK_SYSTEM,
   NAV_VALIDATE_CORRECTIVE_HINT,
   NAV_VALIDATE_SYSTEM,
+  PHASE2_CONVERSATION_CORRECTIVE_HINT,
+  PHASE2_CONVERSATION_EXAMPLE_QUESTION_ASSISTANT,
+  PHASE2_CONVERSATION_EXAMPLE_QUESTION_USER,
+  PHASE2_CONVERSATION_EXAMPLE_SCREEN_ASSISTANT,
+  PHASE2_CONVERSATION_EXAMPLE_SCREEN_USER,
+  PHASE2_CONVERSATION_EXAMPLE_WORKFLOW_ASSISTANT,
+  PHASE2_CONVERSATION_EXAMPLE_WORKFLOW_USER,
+  PHASE2_CONVERSATION_SYSTEM,
   SCREEN_CORRECT_CORRECTIVE_HINT,
   SCREEN_CORRECT_SYSTEM,
   SCREEN_EXTRACT_CORRECTIVE_HINT,
@@ -37,7 +49,9 @@ export type PromptSlug =
   | "phase2.workflow_detail"
   | "phase2.screen_extract"
   | "phase2.nav_validate"
-  | "phase2.screen_correct";
+  | "phase2.screen_correct"
+  | "phase2.conversation"
+  | "phase2.drift_check";
 
 export interface PromptSpec {
   system: string;
@@ -102,6 +116,34 @@ const REGISTRY: Record<PromptSlug, PromptSpec> = {
   "phase2.screen_correct": {
     system: SCREEN_CORRECT_SYSTEM,
     correctiveHint: SCREEN_CORRECT_CORRECTIVE_HINT,
+  },
+  "phase2.conversation": {
+    system: PHASE2_CONVERSATION_SYSTEM,
+    fewShot: [
+      {
+        user: PHASE2_CONVERSATION_EXAMPLE_QUESTION_USER,
+        assistant: PHASE2_CONVERSATION_EXAMPLE_QUESTION_ASSISTANT,
+      },
+      {
+        user: PHASE2_CONVERSATION_EXAMPLE_WORKFLOW_USER,
+        assistant: PHASE2_CONVERSATION_EXAMPLE_WORKFLOW_ASSISTANT,
+      },
+      {
+        user: PHASE2_CONVERSATION_EXAMPLE_SCREEN_USER,
+        assistant: PHASE2_CONVERSATION_EXAMPLE_SCREEN_ASSISTANT,
+      },
+    ],
+    correctiveHint: PHASE2_CONVERSATION_CORRECTIVE_HINT,
+  },
+  "phase2.drift_check": {
+    system: DRIFT_CHECK_SYSTEM,
+    fewShot: [
+      {
+        user: DRIFT_CHECK_EXAMPLE_USER,
+        assistant: DRIFT_CHECK_EXAMPLE_ASSISTANT,
+      },
+    ],
+    correctiveHint: DRIFT_CHECK_CORRECTIVE_HINT,
   },
 };
 

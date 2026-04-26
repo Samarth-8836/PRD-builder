@@ -8,4 +8,6 @@ export * from "./op-2-1b-workflow-detail";
 export * from "./op-2-2a-screen-extract";
 export * from "./op-2-2b-nav-validate";
 export * from "./op-2-2c-screen-correct";
+export * from "./op-2-9-conversation";
+export * from "./op-2-10-drift-check";
 export * from "./format-helpers";

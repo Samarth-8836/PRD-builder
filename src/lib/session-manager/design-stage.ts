@@ -17,15 +17,20 @@ import {
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Session } from "@/lib/storage";
 
-// Kept low to stay within free-tier TPM limits (Groq free is 8K TPM,
-// each detail call is ~1K tokens). Bump when running against a tier with
-// higher capacity.
-const DETAIL_CONCURRENCY = 2;
+// Kept at 1 for free-tier TPM safety (Groq free is 8K TPM; the cascade
+// case in particular runs back-to-back design stages and easily blows
+// past parallel TPM bursts). Bump on tiers with higher capacity.
+const DETAIL_CONCURRENCY = 1;
 
 interface RunDesignStageInput {
   session: Session;
   sse: SSEWriter;
   signal?: AbortSignal;
+  /** Optional Phase 2 review feedback. When present, passed through to
+   *  workflow_discovery and screen_extract so the model applies the
+   *  user's requested change. Used by the cascade runner when a
+   *  COMPATIBLE workflow_change is processed. */
+  feedback?: string;
 }
 
 /**
@@ -46,7 +51,7 @@ interface RunDesignStageInput {
  * phase1_complete so the user can re-trigger via Done.
  */
 export async function runDesignStage(input: RunDesignStageInput): Promise<void> {
-  const { session, sse, signal } = input;
+  const { session, sse, signal, feedback } = input;
   const storage = getStorage();
   const sessionId = session.id;
   const contract = session.documents.projectContract!.content;
@@ -68,7 +73,7 @@ export async function runDesignStage(input: RunDesignStageInput): Promise<void> 
       status: "started",
       note: "Identifying workflows",
     });
-    const stubs = await runWorkflowDiscovery({ contract, signal });
+    const stubs = await runWorkflowDiscovery({ contract, feedback, signal });
     sse.send({
       type: "progress",
       op: "phase2.workflow_discovery",
@@ -125,7 +130,7 @@ export async function runDesignStage(input: RunDesignStageInput): Promise<void> 
       status: "started",
       note: "Deriving screens",
     });
-    let screens = await runScreenExtract({ contract, workflowMap, signal });
+    let screens = await runScreenExtract({ contract, workflowMap, feedback, signal });
     sse.send({
       type: "progress",
       op: "phase2.screen_extract",

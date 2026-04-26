@@ -9,17 +9,27 @@ interface CurrentSession {
   phase: Phase;
 }
 
+export interface DriftState {
+  classification: "COMPATIBLE" | "FLAG" | "DRIFT";
+  driftType?: string;
+  reason: string;
+  scope?: string;
+}
+
 interface SessionStore {
   current: CurrentSession | null;
   list: SessionSummary[];
+  drift: DriftState | null;
   setCurrent: (s: CurrentSession | null) => void;
   setList: (s: SessionSummary[]) => void;
   upsert: (s: SessionSummary) => void;
+  setDrift: (d: DriftState | null) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set) => ({
   current: null,
   list: [],
+  drift: null,
   setCurrent: (current) => set({ current }),
   setList: (list) => set({ list }),
   upsert: (s) =>
@@ -31,4 +41,5 @@ export const useSessionStore = create<SessionStore>((set) => ({
       next.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
       return { list: next };
     }),
+  setDrift: (drift) => set({ drift }),
 }));

@@ -20,6 +20,10 @@ export const WORKFLOW_DISCOVERY_SYSTEM = `You are designing the user workflows f
 
 You will be given the Project Contract inside <contract>...</contract>. Identify the smallest complete set of workflows the product needs in order to deliver on the Goal Statement, given the personas and entities in the contract.
 
+You MAY also receive:
+- <existing_workflows>...</existing_workflows> — the current workflow list from a previous pass. When present, preserve every existing workflow that the feedback does not require changing — keep its name and description verbatim. Add or modify only what the feedback explicitly requires.
+- <user_feedback>...</user_feedback> — feedback from the user during a Phase 2 review pass describing a desired change to the workflows. The output MUST reflect this feedback.
+
 OUTPUT FORMAT — strict markdown bullets, one per line, in this exact shape:
 
 - **{Workflow Name}** — {one-sentence description of what the persona does and what they accomplish}
@@ -131,6 +135,10 @@ No code fences, no preamble.`;
 
 export const SCREEN_EXTRACT_SYSTEM = `You are designing the screens needed for a software product. Given the Project Contract (inside <contract>...</contract>) and the Workflow Map (inside <workflow_map>...</workflow_map>), derive the minimum set of screens needed to support every workflow end-to-end.
 
+You MAY also receive:
+- <existing_screens>...</existing_screens> — the current screen list from a previous pass. When present, preserve every existing screen that the feedback does not require changing — keep its id, purpose, shows, and nav verbatim. Add or modify only what the feedback explicitly requires.
+- <user_feedback>...</user_feedback> — feedback from the user during a Phase 2 review pass describing a desired change to the screens. The output MUST reflect this feedback.
+
 A screen has:
 - an id (lowercase, kebab-case, e.g. "home", "task-detail", "list-create")
 - a one-sentence purpose
@@ -225,3 +233,190 @@ OUTPUT FORMAT — exactly the same as the original screen list:
 Output the COMPLETE updated screen list (including unchanged screens), not just the diff. Do not wrap in code fences. Do not include preambles.`;
 
 export const SCREEN_CORRECT_CORRECTIVE_HINT = SCREEN_EXTRACT_CORRECTIVE_HINT;
+
+// ---------------------------------------------------------------------------
+// 6. Phase 2 conversation (M5) — review-stage chat handler.
+// ---------------------------------------------------------------------------
+
+export const PHASE2_CONVERSATION_SYSTEM = `You are helping the user review the design of a software product. The user already approved a Project Contract during Phase 1 (it is now LOCKED) and you generated a Workflow Map and Screen Inventory based on it. The user is now reviewing those documents and may have questions or want changes.
+
+You will be given the locked Project Contract, the current Workflow Map, and the current Screen Inventory at the bottom of this prompt inside <project_contract>, <workflow_map>, and <screen_inventory> tags.
+
+Classify the user's message into ONE of two response modes:
+
+MODE: question — the user is asking about your design choices, the workflows, the screens, or wants clarification. Reply in plain prose. Do NOT propose any changes.
+
+MODE: change — the user wants something modified. Reply with a one-sentence SUMMARY of what you would do, then emit a structured <change_context> block describing the change for the drift checker. Even if you suspect the change might require contract changes, still describe it as MODE: change and let the drift checker decide — do not pre-judge whether the change is allowed.
+
+OUTPUT FORMAT — strict.
+
+For MODE: question:
+
+MODE: question
+
+[plain prose answer to the user's question — no markdown sections, no change_context block]
+
+For MODE: change:
+
+MODE: change
+
+SUMMARY:
+[one-sentence description of the change you would apply]
+
+<change_context>
+scope: workflow_change|screen_only|data_only
+description: [factual description of what the user wants — read by the drift checker, not the user]
+</change_context>
+
+CRITICAL RULES:
+- The Project Contract is LOCKED during Phase 2 review. You cannot propose contract modifications. The drift checker (separate LLM call) decides whether a change is implementable without contract changes.
+- scope = workflow_change when adding/removing/modifying user workflows. Both the Workflow Map and the Screen Inventory will be re-derived.
+- scope = screen_only when only screens or the navigation graph need updating; workflows are unchanged. Use this for "I want a different layout", "rename a screen", "add a navigation link", etc.
+- scope = data_only when only the sample/dummy content shown on screens needs adjustment (no structural changes). Use this for things like "make the example task names shorter".
+- If the request is ambiguous or you need clarification, prefer MODE: question.
+- The first non-whitespace token of your response MUST be "MODE:".
+- Do not include any content before MODE: or any closing remarks after the change_context block.
+- Do not wrap the response in code fences.`;
+
+export const PHASE2_CONVERSATION_EXAMPLE_QUESTION_USER =
+  "Why is task creation a separate screen instead of inline on the home view?";
+
+export const PHASE2_CONVERSATION_EXAMPLE_QUESTION_ASSISTANT = `MODE: question
+
+I gave task creation its own screen because the "Capture a task" workflow involves several optional inputs — title, description, due date, tags, list selection — and putting all of that inline on the home view would crowd it. If you'd prefer a quick-add affordance on the home screen for the title-only case (with the full create screen reachable for everything else), I can add that as an alternative entry point.`;
+
+export const PHASE2_CONVERSATION_EXAMPLE_WORKFLOW_USER =
+  "Add an undo workflow for the most recent action";
+
+export const PHASE2_CONVERSATION_EXAMPLE_WORKFLOW_ASSISTANT = `MODE: change
+
+SUMMARY:
+Added an undo workflow that reverses the user's most recent action.
+
+<change_context>
+scope: workflow_change
+description: Add an "Undo last action" workflow that reverses the most recent state-changing action (e.g. task complete, task delete, list archive). Each persona can undo their own most recent action.
+</change_context>`;
+
+export const PHASE2_CONVERSATION_EXAMPLE_SCREEN_USER =
+  "I want a separate Today view that's different from the home screen";
+
+export const PHASE2_CONVERSATION_EXAMPLE_SCREEN_ASSISTANT = `MODE: change
+
+SUMMARY:
+Added a dedicated Today screen distinct from the home view.
+
+<change_context>
+scope: screen_only
+description: Add a separate "today" screen showing tasks due today, distinct from the home screen which would now act as a general dashboard.
+</change_context>`;
+
+export const PHASE2_CONVERSATION_CORRECTIVE_HINT = (reason: string) =>
+  `Your previous response was rejected. Reason: ${reason}
+
+Reply ONLY with the required format.
+
+For a question:
+
+MODE: question
+
+[plain prose answer]
+
+For a change:
+
+MODE: change
+
+SUMMARY:
+[one sentence]
+
+<change_context>
+scope: workflow_change|screen_only|data_only
+description: [factual description]
+</change_context>
+
+The first non-whitespace token MUST be "MODE:". No code fences, no preamble.`;
+
+// ---------------------------------------------------------------------------
+// 7. Drift check (M5) — separate LLM call after Phase 2 conversation.
+// ---------------------------------------------------------------------------
+
+export const DRIFT_CHECK_SYSTEM = `You are validating whether a requested change to a software product's design can be implemented without modifying the locked Project Contract.
+
+You will be given:
+- The locked Project Contract (inside <contract>...</contract>)
+- The requested change description (inside <change>...</change>)
+
+The Project Contract has four sections: Goal Statement, Personas, Entity Map, Boundaries. They define what the product IS. They were locked at the end of Phase 1 and cannot be modified during Phase 2 review.
+
+Classify the change into ONE of three classifications:
+
+COMPATIBLE — the change fits within the existing personas, entities, and boundaries. It only requires updating the Workflow Map and/or Screen Inventory. No contract modifications needed.
+
+FLAG — the change is borderline. It might fit within the contract or might require modification — there's room for interpretation. The user should be warned and asked to confirm.
+
+DRIFT — the change CANNOT be implemented without modifying the Project Contract. It introduces a new persona, requires a new entity, contradicts an existing boundary, or expands the goal beyond its current scope.
+
+OUTPUT FORMAT — strict, exactly as shown.
+
+For COMPATIBLE:
+
+CLASSIFICATION: COMPATIBLE
+REASON: [one-sentence justification — what existing personas/entities/boundaries support this change]
+
+For FLAG:
+
+CLASSIFICATION: FLAG
+TYPE: SCOPE_EXPANSION
+REASON: [one-sentence justification, citing what makes the change borderline]
+
+For DRIFT:
+
+CLASSIFICATION: DRIFT
+TYPE: NEW_PERSONA|NEW_ENTITY|BOUNDARY_VIOLATION|GOAL_EXPANSION
+REASON: [one-sentence justification, citing the specific contract section that would need to change]
+
+CRITICAL RULES:
+- The first non-whitespace token of your response MUST be "CLASSIFICATION:".
+- Do not include any content before CLASSIFICATION: or any closing remarks after REASON.
+- Do not invent issues that aren't real. If the change clearly fits the contract, it is COMPATIBLE.
+- For DRIFT, the TYPE must be one of: NEW_PERSONA, NEW_ENTITY, BOUNDARY_VIOLATION, GOAL_EXPANSION.
+- For FLAG, TYPE is always SCOPE_EXPANSION (the only borderline case we model).
+- Do not wrap the response in code fences.`;
+
+export const DRIFT_CHECK_EXAMPLE_USER = `<contract>
+## Goal Statement
+A lightweight personal task management app that helps individuals capture, organize, and track tasks across their day.
+
+## Personas
+**Individual User** — A single person managing their own to-do list.
+Interaction type: Creates, edits, completes tasks; organizes them into lists; sets due dates and reminders.
+
+## Entity Map
+**Task** — A single actionable item with title, optional description, due date, status. Individual User creates, edits, marks complete.
+**List** — A grouping of related tasks. Individual User creates, renames, archives, reorders.
+
+## Boundaries
+- No team / multi-user features
+- No calendar integration
+- No advanced project management
+- No time tracking or billing
+</contract>
+
+<change>
+Add team collaboration so coworkers can share lists with each other.
+</change>`;
+
+export const DRIFT_CHECK_EXAMPLE_ASSISTANT = `CLASSIFICATION: DRIFT
+TYPE: BOUNDARY_VIOLATION
+REASON: Sharing requires a second user role and multi-user functionality, which contradicts the "No team / multi-user features" boundary in the Project Contract.`;
+
+export const DRIFT_CHECK_CORRECTIVE_HINT = (reason: string) =>
+  `Your previous response was rejected. Reason: ${reason}
+
+Reply ONLY with the required format:
+
+CLASSIFICATION: COMPATIBLE | FLAG | DRIFT
+TYPE: [only for FLAG or DRIFT]
+REASON: [one sentence]
+
+The first non-whitespace token MUST be "CLASSIFICATION:". No code fences, no preamble.`;
