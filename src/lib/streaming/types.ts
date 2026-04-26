@@ -28,6 +28,9 @@ export type StreamEvent =
   /** Wireframe finished generating. The viewer should reload the iframe
    *  to pick up the new version. */
   | { type: "wireframe_ready"; version: number; files: string[] }
+  /** Wireframe was discarded (e.g. workflow_change cascade rewound to
+   *  Design). The viewer should drop the iframe and switch to a doc tab. */
+  | { type: "wireframe_cleared" }
   | { type: "phase"; phase: Phase }
   | { type: "progress"; op: string; status: "started" | "completed" | "failed"; note?: string }
   | {

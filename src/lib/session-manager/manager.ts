@@ -66,7 +66,7 @@ interface RollbackInput {
   signal?: AbortSignal;
 }
 
-interface ApproveDesignInput {
+interface ApproveInput {
   sessionId: string;
   sse: SSEWriter;
   signal?: AbortSignal;
@@ -198,15 +198,15 @@ export class SessionManager {
           await this.handlePhase1Chat(refreshed, trimmed, sse, signal);
           return;
         case "phase2_design_review":
+        case "phase2_wireframe_review":
           await this.handlePhase2ReviewChat(refreshed, trimmed, sse, signal);
           return;
         case "phase2_design_running":
         case "phase2_wireframe_running":
           throw new SessionBusyError(sessionId);
-        case "phase2_wireframe_review":
         case "complete":
           throw new WrongPhaseError(
-            `Chat in ${refreshed.phase} arrives in a later milestone`
+            "Session is already marked complete; roll back to Phase 1 to revise."
           );
       }
     } finally {
@@ -306,6 +306,8 @@ export class SessionManager {
       signal,
       scope: conv.scope,
       description: conv.description,
+      target: conv.target,
+      phase: session.phase,
     });
   }
 
@@ -423,9 +425,9 @@ export class SessionManager {
   }
 
   // ---------------------------------------------------------------------
-  // Phase 2 design review -> wireframe stage (Approve)
+  // Phase 2 approve — dispatches by current phase
   // ---------------------------------------------------------------------
-  async approveDesign(input: ApproveDesignInput): Promise<void> {
+  async approve(input: ApproveInput): Promise<void> {
     const { sessionId, sse, signal } = input;
     if (this.busy.has(sessionId)) throw new SessionBusyError(sessionId);
 
@@ -436,20 +438,6 @@ export class SessionManager {
         sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
         return;
       }
-      if (session.phase !== "phase2_design_review") {
-        throw new WrongPhaseError(
-          `Cannot approve from ${session.phase}; approval is only available from phase2_design_review`
-        );
-      }
-      if (
-        !session.documents.workflowMap ||
-        !session.documents.screenInventory ||
-        !session.documents.projectContract
-      ) {
-        throw new WrongPhaseError(
-          "Cannot approve — Phase 2 documents are missing"
-        );
-      }
 
       sse.send({
         type: "meta",
@@ -458,7 +446,41 @@ export class SessionManager {
         phase: session.phase,
       });
 
-      await runWireframeStage({ session, sse, signal });
+      if (session.phase === "phase2_design_review") {
+        if (
+          !session.documents.workflowMap ||
+          !session.documents.screenInventory ||
+          !session.documents.projectContract
+        ) {
+          throw new WrongPhaseError(
+            "Cannot approve — Phase 2 documents are missing"
+          );
+        }
+        await runWireframeStage({ session, sse, signal });
+        return;
+      }
+
+      if (session.phase === "phase2_wireframe_review") {
+        if (!session.wireframe) {
+          throw new WrongPhaseError(
+            "Cannot approve — wireframe artifact is missing"
+          );
+        }
+        const updated = await this.storage.setPhase(sessionId, "complete");
+        sse.send({ type: "phase", phase: updated.phase });
+        sse.send({
+          type: "progress",
+          op: "phase2.complete",
+          status: "completed",
+          note:
+            "All four artifacts are locked in. Click Export to download the bundle.",
+        });
+        return;
+      }
+
+      throw new WrongPhaseError(
+        `Cannot approve from ${session.phase}; approval is only available from phase2_design_review or phase2_wireframe_review`
+      );
     } finally {
       this.busy.delete(sessionId);
     }

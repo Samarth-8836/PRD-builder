@@ -33,7 +33,7 @@ export async function runPhase2Conversation(
   const workflowMap = session.documents.workflowMap?.content ?? "";
   const screenInventory = session.documents.screenInventory?.content ?? "";
 
-  const systemWithDocs = `${prompt.system}
+  let systemWithDocs = `${prompt.system}
 
 <project_contract>
 ${contract.trim()}
@@ -46,6 +46,15 @@ ${workflowMap.trim()}
 <screen_inventory>
 ${screenInventory.trim()}
 </screen_inventory>`;
+
+  if (session.wireframe) {
+    const screenIds = Object.keys(session.wireframe.files)
+      .filter((f) => f.endsWith(".html") && f !== "index.html")
+      .map((f) => f.replace(/\.html$/, ""));
+    systemWithDocs += `\n\n<wireframe_state>
+A clickable wireframe has been generated (version ${session.wireframe.version}). Screen ids with rendered HTML files: ${screenIds.join(", ")}.
+</wireframe_state>`;
+  }
 
   const messages = [
     ...fewShot.flatMap((ex) => [

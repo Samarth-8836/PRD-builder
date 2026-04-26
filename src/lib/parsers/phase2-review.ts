@@ -16,6 +16,10 @@ export interface Phase2Change {
   summary: string;
   scope: ChangeScope;
   description: string;
+  /** Optional screen id (lowercase kebab-case) the change targets — used
+   *  by the wireframe-stage cascade to regenerate just one screen's HTML
+   *  for `scope: screen_only`. */
+  target?: string;
 }
 
 export type Phase2Conversation = Phase2Question | Phase2Change;
@@ -25,6 +29,7 @@ const SUMMARY_RE = /^\s*(?:\*\*\s*)?summary\s*(?:\*\*)?\s*:\s*\n/i;
 const CHANGE_CONTEXT_OPEN_RE = /\n\s*<change_context>\s*\n?/i;
 const CHANGE_CONTEXT_CLOSE_RE = /\n?\s*<\/change_context>\s*$/i;
 const SCOPE_RE = /(?:^|\n)\s*scope\s*:\s*(workflow_change|screen_only|data_only)\s*$/im;
+const TARGET_RE = /(?:^|\n)\s*target\s*:\s*([a-z][a-z0-9-]*)\s*$/im;
 const DESCRIPTION_RE = /(?:^|\n)\s*description\s*:\s*(.+?)\s*$/im;
 const VALID_SCOPES: ChangeScope[] = ["workflow_change", "screen_only", "data_only"];
 
@@ -90,7 +95,10 @@ export function parsePhase2Conversation(
   const description = descMatch[1]!.trim();
   if (!description) return fail('<change_context> "description:" was empty');
 
-  return ok({ mode: "change", summary, scope, description });
+  const targetMatch = ccBody.match(TARGET_RE);
+  const target = targetMatch?.[1]?.toLowerCase();
+
+  return ok({ mode: "change", summary, scope, description, target });
 }
 
 // ---------------------------------------------------------------------------

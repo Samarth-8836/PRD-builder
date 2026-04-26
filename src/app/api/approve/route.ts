@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
 
   return makeSSEResponse(async (sse) => {
     try {
-      await manager.approveDesign({ sessionId, sse, signal: req.signal });
+      await manager.approve({ sessionId, sse, signal: req.signal });
     } catch (err: unknown) {
       if (err instanceof SessionBusyError) sse.error(err.message, err.code);
       else if (err instanceof WrongPhaseError) sse.error(err.message, err.code);

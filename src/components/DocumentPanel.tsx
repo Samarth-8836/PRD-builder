@@ -3,7 +3,7 @@
 import { Markdown } from "./Markdown";
 import { PhaseIndicator } from "./PhaseIndicator";
 import { WireframeViewer } from "./WireframeViewer";
-import { approveDesign, validatePhase1 } from "@/hooks/useSSE";
+import { approve, validatePhase1 } from "@/hooks/useSSE";
 import type { DocumentName } from "@/lib/streaming";
 import { useChatStore } from "@/stores/chat";
 import { useDocumentStore } from "@/stores/document";
@@ -31,10 +31,14 @@ export function DocumentPanel() {
   const hasContract = docs.projectContract.content.length > 0;
   const showDoneButton =
     hasContract && current?.phase === "phase1" && docs.projectContract.finalized;
-  const showApproveButton =
+  const showApproveDesign =
     current?.phase === "phase2_design_review" &&
     docs.workflowMap.content.length > 0 &&
     docs.screenInventory.content.length > 0;
+  const showApproveWireframe =
+    current?.phase === "phase2_wireframe_review" && docs.wireframe.ready;
+  const showExport =
+    current && (docs.wireframe.ready || current.phase === "complete");
 
   async function handleDone() {
     if (!current) return;
@@ -50,7 +54,7 @@ export function DocumentPanel() {
   async function handleApprove() {
     if (!current) return;
     try {
-      await approveDesign(current.id);
+      await approve(current.id);
     } catch (err) {
       useChatStore.getState().appendSystem(
         `Error: ${err instanceof Error ? err.message : String(err)}`
@@ -75,24 +79,43 @@ export function DocumentPanel() {
               {current ? current.title : "Project Contract"}
             </div>
           </div>
-          {showDoneButton && (
-            <button
-              onClick={() => void handleDone()}
-              disabled={streaming}
-              className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
-            >
-              Done - Validate &amp; Complete Phase 1
-            </button>
-          )}
-          {showApproveButton && (
-            <button
-              onClick={() => void handleApprove()}
-              disabled={streaming}
-              className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
-            >
-              Approve → Generate Wireframe
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {showExport && current && (
+              <a
+                href={`/api/export/${current.id}`}
+                className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1 text-xs font-medium text-neutral-200 hover:bg-neutral-800"
+              >
+                Export ↓
+              </a>
+            )}
+            {showDoneButton && (
+              <button
+                onClick={() => void handleDone()}
+                disabled={streaming}
+                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
+              >
+                Done - Validate &amp; Complete Phase 1
+              </button>
+            )}
+            {showApproveDesign && (
+              <button
+                onClick={() => void handleApprove()}
+                disabled={streaming}
+                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
+              >
+                Approve → Generate Wireframe
+              </button>
+            )}
+            {showApproveWireframe && (
+              <button
+                onClick={() => void handleApprove()}
+                disabled={streaming}
+                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
+              >
+                Approve → Mark Complete
+              </button>
+            )}
+          </div>
         </div>
         <DocumentTabs />
       </header>

@@ -25,6 +25,7 @@ export function ChatPanel() {
   const blocked = drift?.classification === "DRIFT";
   const inDesignReview = current?.phase === "phase2_design_review";
   const inWireframeReview = current?.phase === "phase2_wireframe_review";
+  const isComplete = current?.phase === "complete";
   const canRollback = inDesignReview || inWireframeReview;
 
   async function submit() {
@@ -62,13 +63,15 @@ export function ChatPanel() {
   const showThinking = streaming && !pendingAssistant;
   const placeholder = blocked
     ? "Change blocked. Roll back to Phase 1 to continue editing."
-    : current
-      ? inWireframeReview
-        ? "Wireframe ready. Roll back to Phase 1 to revise (chat for wireframe edits arrives in M7)."
-        : inDesignReview
-          ? "Ask about the design or request a change..."
-          : "Ask a question or request an edit..."
-      : "e.g. I want to build a simple todo app";
+    : isComplete
+      ? "Session is complete. Roll back to Phase 1 to revise."
+      : current
+        ? inWireframeReview
+          ? "Ask about the wireframe, request a content tweak, or change a screen..."
+          : inDesignReview
+            ? "Ask about the design or request a change..."
+            : "Ask a question or request an edit..."
+        : "e.g. I want to build a simple todo app";
 
   return (
     <div className="flex h-full flex-col">
@@ -115,7 +118,7 @@ export function ChatPanel() {
           rows={2}
           placeholder={placeholder}
           className="w-full resize-none rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={streaming || blocked || inWireframeReview}
+          disabled={streaming || blocked || isComplete}
         />
         <div className="mt-2 flex justify-between gap-2">
           {canRollback && !blocked ? (
@@ -131,7 +134,7 @@ export function ChatPanel() {
           )}
           <button
             onClick={() => void submit()}
-            disabled={streaming || blocked || inWireframeReview || !input.trim()}
+            disabled={streaming || blocked || isComplete || !input.trim()}
             className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
           >
             Send

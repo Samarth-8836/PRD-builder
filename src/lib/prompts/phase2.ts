@@ -238,9 +238,9 @@ export const SCREEN_CORRECT_CORRECTIVE_HINT = SCREEN_EXTRACT_CORRECTIVE_HINT;
 // 6. Phase 2 conversation (M5) — review-stage chat handler.
 // ---------------------------------------------------------------------------
 
-export const PHASE2_CONVERSATION_SYSTEM = `You are helping the user review the design of a software product. The user already approved a Project Contract during Phase 1 (it is now LOCKED) and you generated a Workflow Map and Screen Inventory based on it. The user is now reviewing those documents and may have questions or want changes.
+export const PHASE2_CONVERSATION_SYSTEM = `You are helping the user review the design of a software product. The user already approved a Project Contract during Phase 1 (it is now LOCKED) and you generated a Workflow Map and Screen Inventory based on it. The user is now reviewing those documents and may have questions or want changes. If the wireframe has been built, the user may also be reviewing the rendered HTML pages.
 
-You will be given the locked Project Contract, the current Workflow Map, and the current Screen Inventory at the bottom of this prompt inside <project_contract>, <workflow_map>, and <screen_inventory> tags.
+You will be given the locked Project Contract, the current Workflow Map, and the current Screen Inventory at the bottom of this prompt inside <project_contract>, <workflow_map>, and <screen_inventory> tags. If a wireframe is currently rendered, you may also receive a <wireframe_state> block listing the screen ids that have generated HTML files.
 
 Classify the user's message into ONE of two response modes:
 
@@ -265,14 +265,16 @@ SUMMARY:
 
 <change_context>
 scope: workflow_change|screen_only|data_only
+target: <screen-id>
 description: [factual description of what the user wants — read by the drift checker, not the user]
 </change_context>
 
 CRITICAL RULES:
 - The Project Contract is LOCKED during Phase 2 review. You cannot propose contract modifications. The drift checker (separate LLM call) decides whether a change is implementable without contract changes.
-- scope = workflow_change when adding/removing/modifying user workflows. Both the Workflow Map and the Screen Inventory will be re-derived.
-- scope = screen_only when only screens or the navigation graph need updating; workflows are unchanged. Use this for "I want a different layout", "rename a screen", "add a navigation link", etc.
-- scope = data_only when only the sample/dummy content shown on screens needs adjustment (no structural changes). Use this for things like "make the example task names shorter".
+- scope = workflow_change when adding/removing/modifying user workflows. Both the Workflow Map and the Screen Inventory will be re-derived. Use this when the user asks for something that needs a workflow that doesn't exist yet (e.g. "I'm missing a screen for managing recurring tasks" — the workflow itself is missing).
+- scope = screen_only when only screens or the navigation graph need updating; workflows are unchanged. Use this for "I want a different layout", "rename a screen", "add a navigation link", "the task-detail screen is missing the Mark complete button", etc.
+- scope = data_only when only the sample/dummy content shown on screens needs adjustment (no structural changes). Use this for things like "make the example task names shorter", "add more variety to the lists", "swap to business-themed sample data".
+- target field is OPTIONAL. Include it only for scope = screen_only when you can name ONE specific screen-id (lowercase kebab-case) that needs to change — this lets the wireframe stage regenerate just that one HTML file. Omit target if the change touches multiple screens or you're not sure which one.
 - If the request is ambiguous or you need clarification, prefer MODE: question.
 - The first non-whitespace token of your response MUST be "MODE:".
 - Do not include any content before MODE: or any closing remarks after the change_context block.
@@ -309,6 +311,33 @@ Added a dedicated Today screen distinct from the home view.
 <change_context>
 scope: screen_only
 description: Add a separate "today" screen showing tasks due today, distinct from the home screen which would now act as a general dashboard.
+</change_context>`;
+
+export const PHASE2_CONVERSATION_EXAMPLE_SCREEN_TARGETED_USER =
+  "The task-detail screen is missing a Mark complete button";
+
+export const PHASE2_CONVERSATION_EXAMPLE_SCREEN_TARGETED_ASSISTANT = `MODE: change
+
+SUMMARY:
+Added a Mark complete button to the task-detail screen.
+
+<change_context>
+scope: screen_only
+target: task-detail
+description: Add a Mark complete toggle/button to the task-detail screen so the user can mark the task done from the detail view itself.
+</change_context>`;
+
+export const PHASE2_CONVERSATION_EXAMPLE_DATA_USER =
+  "The example task names are too long, make them feel more like real one-line todos";
+
+export const PHASE2_CONVERSATION_EXAMPLE_DATA_ASSISTANT = `MODE: change
+
+SUMMARY:
+Regenerated the sample task data with shorter, more realistic one-line todos.
+
+<change_context>
+scope: data_only
+description: Regenerate the sample tasks with shorter, conversational one-line titles (e.g. "Buy groceries", "Reply to Anna"), keeping the same workflows and screens.
 </change_context>`;
 
 export const PHASE2_CONVERSATION_CORRECTIVE_HINT = (reason: string) =>

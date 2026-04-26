@@ -69,7 +69,7 @@ export async function validatePhase1(sessionId: string): Promise<void> {
   }
 }
 
-export async function approveDesign(sessionId: string): Promise<void> {
+export async function approve(sessionId: string): Promise<void> {
   const chat = useChatStore.getState();
   useSessionStore.getState().setDrift(null);
   chat.setStreaming(true);
@@ -189,6 +189,9 @@ function dispatch(event: StreamEvent): void {
       return;
     case "wireframe_ready":
       doc.setWireframe(event.version, event.files);
+      return;
+    case "wireframe_cleared":
+      doc.clearWireframe();
       return;
     case "progress":
       if (event.status === "completed" && event.note) {
