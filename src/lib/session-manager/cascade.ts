@@ -1,6 +1,5 @@
 import {
   formatDataJs,
-  runDummyData,
   runScreenHtml,
 } from "@/lib/operations";
 import {
@@ -8,10 +7,21 @@ import {
   type ChangeScope,
   type ScreenSpec,
 } from "@/lib/parsers";
+import { PipelineEngine, sessionToSlots } from "@/lib/pipeline";
+import {
+  PRD_PIPELINE,
+  PRD_SLOT_IDS,
+  PRD_STEP_IDS,
+} from "@/lib/pipeline/configs/prd-builder";
+import { requireJson } from "@/lib/pipeline/slots";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Phase, type Session } from "@/lib/storage";
 import { runScreenStage } from "./screen-stage";
 import { runWorkflowStage } from "./workflow-stage";
+
+// Engine is reused across cascade invocations; constructing it is cheap
+// (just config validation), but a single instance keeps things tidy.
+const engine = new PipelineEngine(PRD_PIPELINE);
 
 interface RunCascadeInput {
   session: Session;
@@ -269,8 +279,6 @@ interface DataOnlyInput {
 async function runDataOnlyWireframeCascade(input: DataOnlyInput): Promise<void> {
   const { session, sse, signal, description } = input;
   const storage = getStorage();
-  const contract = session.documents.projectContract!.content;
-  const screenInventory = session.documents.screenInventory!.content;
 
   sse.send({
     type: "progress",
@@ -279,12 +287,19 @@ async function runDataOnlyWireframeCascade(input: DataOnlyInput): Promise<void> 
     note: "Regenerating sample data — screen HTML will be preserved",
   });
 
-  const data = await runDummyData({
-    contract,
-    screenInventory,
+  // Engine path: just re-run the wireframeData step with feedback. The
+  // screen HTML files in the existing fileset are preserved verbatim;
+  // we only swap data.js inside the artifact.
+  const slots = sessionToSlots(session);
+  const dataOut = await engine.runStep({
+    stepId: PRD_STEP_IDS.wireframeData,
+    sessionId: session.id,
+    inputs: slots,
     feedback: description,
     signal,
   });
+  const dataPayload = requireJson(dataOut, PRD_SLOT_IDS.wireframeData);
+  const data = dataPayload.data as Record<string, unknown>;
   sse.send({
     type: "progress",
     op: "phase2.dummy_data",
@@ -330,8 +345,11 @@ async function runScreenOnlyWireframeCascade(
   const targetIds: string[] =
     target && idSet.has(target) ? [target] : screens.map((s) => s.id);
 
-  const data =
-    extractDummyData(session.wireframe!.files["data.js"] ?? "") ?? {};
+  // Note: M9 keeps this path on direct `runScreenHtml` calls because the
+  // engine path would also regenerate the shell substep, which today's
+  // behavior preserves verbatim. M10 will refactor the engine to allow
+  // skipping unaffected substeps in cascade mode.
+  const data = extractDummyDataFromArtifact(session) ?? {};
 
   sse.send({
     type: "progress",
@@ -381,23 +399,19 @@ async function runScreenOnlyWireframeCascade(
         : `Updated all ${targetIds.length} screens`,
   });
 
-  // The change_context description is delivered to the model via the
-  // chat history (already in conversation context); we don't pass it
-  // again here. Suppressing unused-var lint:
   void description;
 }
 
 /**
- * Pulls the JSON object out of `window.DATA = {...};` so screen-only
- * regeneration can hand the same shape back to the screen prompt without
- * an extra LLM call. Returns null if anything looks off.
+ * Reuses the adapter's parsed wireframeData slot rather than re-parsing
+ * data.js inline. Returns null if the artifact has no data slot
+ * (shouldn't happen post-wireframe-stage success, but defensive).
  */
-function extractDummyData(dataJs: string): Record<string, unknown> | null {
-  const match = dataJs.match(/window\.DATA\s*=\s*([\s\S]*?);\s*$/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[1]!) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+function extractDummyDataFromArtifact(
+  session: Session
+): Record<string, unknown> | null {
+  const slots = sessionToSlots(session);
+  const dataSlot = slots[PRD_SLOT_IDS.wireframeData];
+  if (!dataSlot || dataSlot.kind !== "json") return null;
+  return dataSlot.data as Record<string, unknown>;
 }

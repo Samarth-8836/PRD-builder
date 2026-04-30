@@ -10,7 +10,13 @@
 
 export * from "./types";
 export { PipelineEngine, NotImplementedError } from "./engine";
-export type { CascadePreview, StepState } from "./engine";
+export type {
+  CascadePreview,
+  StepState,
+  StepProgressEvent,
+  RunStepArgs,
+} from "./engine";
+export { sessionToSlots, extractDummyData } from "./adapter";
 export {
   describe as describeLifecycle,
   toLegacyPhase,

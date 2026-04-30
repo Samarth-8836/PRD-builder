@@ -15,8 +15,14 @@ import type {
   PipelineConfig,
   SlotPayload,
   StepConfig,
+  StepContext,
   StepId,
 } from "./types";
+// Runners are imported lazily inside runStep so the read-only graph
+// methods (topo, descendants, previewCascade) don't pull `@/lib/prompts`
+// + `@/lib/operations` into modules that just want graph shape (e.g.,
+// the unit tests under Node's --experimental-strip-types runner, which
+// can't resolve TS path aliases).
 
 export type StepState =
   | "pending"
@@ -167,8 +173,80 @@ export class PipelineEngine {
 
   // --- Runtime methods (M9+) -------------------------------------------------
 
-  async runStep(_args: unknown): Promise<void> {
-    throw new NotImplementedError("runStep is implemented in M9");
+  /**
+   * Run a step. Pure compute: reads from `inputs` (caller-provided), writes
+   * its output as a `Record<DocSlotId, SlotPayload>`. The caller is
+   * responsible for persisting the result to storage and emitting any
+   * SSE events; the engine is wire-format-agnostic.
+   *
+   * Progress is reported via `onProgress` (substep/fanout-item granularity).
+   * The default `__default__` slot key returned by SingleRunners that don't
+   * specify `format` is remapped to the step's `produces[0]`.
+   */
+  async runStep(args: RunStepArgs): Promise<Record<DocSlotId, SlotPayload>> {
+    const step = this.requireStep(args.stepId);
+    const ctx: StepContext = {
+      sessionId: args.sessionId,
+      inputs: args.inputs,
+      feedback: args.feedback,
+      target: args.target,
+    };
+
+    const { runSingle, runFanout, runCompose } = await import(
+      "./runners/index.ts"
+    );
+
+    let raw: Record<string, SlotPayload>;
+    if (step.runner.kind === "single") {
+      raw = await runSingle({
+        runner: step.runner,
+        ctx,
+        signal: args.signal,
+        onDelta: args.onDelta,
+        onRetry: args.onRetry,
+      });
+    } else if (step.runner.kind === "fanout") {
+      raw = await runFanout({
+        runner: step.runner,
+        ctx,
+        signal: args.signal,
+        onProgress: (itemId, status, note) =>
+          args.onProgress?.({
+            kind: "fanout_item",
+            stepId: args.stepId,
+            itemId,
+            status,
+            note,
+          }),
+        onlyItemId: args.onlyItemId,
+        priorResults: args.priorResults,
+      });
+    } else {
+      raw = await runCompose({
+        runner: step.runner,
+        ctx,
+        signal: args.signal,
+        onSubstep: (substepId, status, note) =>
+          args.onProgress?.({
+            kind: "substep",
+            stepId: args.stepId,
+            substepId,
+            status,
+            note,
+          }),
+        onFanoutItem: (substepId, itemId, status, note) =>
+          args.onProgress?.({
+            kind: "fanout_item",
+            stepId: args.stepId,
+            substepId,
+            itemId,
+            status,
+            note,
+          }),
+      });
+    }
+
+    return remapToProducedSlots(step, raw);
   }
 
   async approveCurrentReview(_args: unknown): Promise<void> {
@@ -197,6 +275,74 @@ export class NotImplementedError extends Error {
     super(msg);
     this.name = "NotImplementedError";
   }
+}
+
+// ---------------------------------------------------------------------------
+// runStep API
+// ---------------------------------------------------------------------------
+
+export type StepProgressEvent =
+  | {
+      kind: "substep";
+      stepId: StepId;
+      substepId: string;
+      status: "started" | "completed" | "skipped" | "failed";
+      note?: string;
+    }
+  | {
+      kind: "fanout_item";
+      stepId: StepId;
+      /** Substep id when the fanout is inside a compose runner. */
+      substepId?: string;
+      itemId: string;
+      status: "started" | "completed" | "failed";
+      note?: string;
+    };
+
+export interface RunStepArgs {
+  stepId: StepId;
+  sessionId: string;
+  inputs: Readonly<Record<string, SlotPayload>>;
+  feedback?: string;
+  target?: string;
+  signal?: AbortSignal;
+  onProgress?: (event: StepProgressEvent) => void;
+  onDelta?: (delta: string) => void;
+  onRetry?: (reason: string, attempt: number) => void;
+  /** Fanout sub-target case: only regenerate the matching item id. The
+   *  other items reuse the prior parsed values from `priorResults`. Only
+   *  honored when the step's runner is `kind: "fanout"`. */
+  onlyItemId?: string;
+  priorResults?: Record<string, unknown>;
+}
+
+function remapToProducedSlots(
+  step: StepConfig,
+  raw: Record<string, SlotPayload>
+): Record<DocSlotId, SlotPayload> {
+  const out: Record<DocSlotId, SlotPayload> = {};
+  if (raw.__default__) {
+    const firstSlot = step.produces[0];
+    if (!firstSlot) {
+      throw new Error(
+        `Step ${String(step.id)} returned __default__ but produces is empty`
+      );
+    }
+    out[firstSlot] = raw.__default__;
+  }
+  for (const [key, payload] of Object.entries(raw)) {
+    if (key === "__default__") continue;
+    out[key as DocSlotId] = payload;
+  }
+  // Validate every produced slot is set.
+  for (const slotId of step.produces) {
+    if (!out[slotId]) {
+      throw new Error(
+        `Step ${String(step.id)} did not produce required slot "${String(slotId)}"`
+      );
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
