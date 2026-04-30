@@ -150,20 +150,42 @@ export function parseScreens(input: string): ParseResult<ScreenSpec[]> {
     );
   }
 
-  // Validate each screen has shows + nav field; check nav targets exist.
-  const idSet = new Set(screens.map((s) => s.id));
+  // Each screen must have a `Shows:` line. Nav target existence is NOT
+  // validated here — that's nav_validate's job in the screen stage. The
+  // screen-stage finalizer (`finalizeScreenList`) drops any dangling nav
+  // references after screen_correct has run. Validating at parse time
+  // would gate the screen stage out of its own correction loop.
   for (const s of screens) {
     if (!s.shows) return fail(`Screen "${s.id}" missing the "Shows:" line`);
-    for (const target of s.nav) {
-      if (!idSet.has(target)) {
-        return fail(
-          `Screen "${s.id}" navigates to "${target}", which isn't a defined screen id`
-        );
-      }
-    }
   }
 
   return ok(screens);
+}
+
+/**
+ * Code-only finalizer for a screen list. Drops nav entries that point at
+ * undefined screen ids. Called after screen_extract (and optionally
+ * screen_correct) so the saved Screen Inventory is internally consistent
+ * regardless of what the model emitted.
+ */
+export function finalizeScreenList(screens: ScreenSpec[]): {
+  screens: ScreenSpec[];
+  droppedNav: { from: string; to: string }[];
+} {
+  const idSet = new Set(screens.map((s) => s.id));
+  const droppedNav: { from: string; to: string }[] = [];
+  const cleaned = screens.map((s) => {
+    const keep: string[] = [];
+    for (const target of s.nav) {
+      if (idSet.has(target)) {
+        keep.push(target);
+      } else {
+        droppedNav.push({ from: s.id, to: target });
+      }
+    }
+    return keep.length === s.nav.length ? s : { ...s, nav: keep };
+  });
+  return { screens: cleaned, droppedNav };
 }
 
 function parseNavList(raw: string): string[] {
@@ -240,17 +262,10 @@ export function parseScreenInventoryDoc(input: string): ParseResult<ScreenSpec[]
     return fail(`Expected at least 2 screens in rendered inventory; found ${screens.length}`);
   }
 
-  const idSet = new Set(screens.map((s) => s.id));
-  for (const s of screens) {
-    for (const target of s.nav) {
-      if (!idSet.has(target)) {
-        return fail(
-          `Screen "${s.id}" navigates to "${target}", which isn't a defined screen id`
-        );
-      }
-    }
-  }
-
+  // Nav-target existence is not validated at read-back time. The
+  // screen-stage finalizer drops dangling nav before saving, so a
+  // well-formed inventory should not contain any. If somehow one slips
+  // through, the wireframe smoke test will surface broken hrefs.
   return ok(screens);
 }
 

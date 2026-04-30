@@ -4,6 +4,7 @@ import {
   runScreenCorrect,
   runScreenExtract,
 } from "@/lib/operations";
+import { finalizeScreenList } from "@/lib/parsers";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Phase, type Session } from "@/lib/storage";
 
@@ -104,6 +105,26 @@ export async function runScreenStage(input: RunScreenStageInput): Promise<void> 
         op: "phase2.screen_correct",
         status: "completed",
         note: `Updated to ${screens.length} screens`,
+      });
+    }
+
+    // Code-only fixup: drop any nav targets that don't exist as screens.
+    // Defends against a screen_correct pass that itself emits a dangling
+    // nav reference. The wireframe stage's smoke test would catch this
+    // later, but cleaning up here keeps the saved Screen Inventory
+    // internally consistent.
+    const finalized = finalizeScreenList(screens);
+    screens = finalized.screens;
+    if (finalized.droppedNav.length > 0) {
+      const note =
+        finalized.droppedNav.length === 1
+          ? `Dropped 1 dangling nav link (${finalized.droppedNav[0]!.from} → ${finalized.droppedNav[0]!.to})`
+          : `Dropped ${finalized.droppedNav.length} dangling nav links`;
+      sse.send({
+        type: "progress",
+        op: "phase2.screen_finalize",
+        status: "completed",
+        note,
       });
     }
 
