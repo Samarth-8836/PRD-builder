@@ -589,6 +589,8 @@ export class SessionManager {
         screenInventory: session.documents.screenInventory,
         wireframe: session.wireframe,
         phase: session.phase,
+        contractAtRollback:
+          session.documents.projectContract?.content ?? "",
         takenAt: new Date().toISOString(),
       };
       await this.storage.setPhase2Snapshot(sessionId, snapshot);
@@ -639,17 +641,15 @@ export class SessionManager {
 
 function contractsMatch(session: Session, snapshot: Phase2Snapshot): boolean {
   // Equivalence check: did the user end up with the same contract content
-  // after the rollback? We use the pre-rollback contractSnapshot (preserved
-  // from the original PASS) as the baseline and compare to the current
-  // contract content character-by-character (after trim, to ignore stray
-  // whitespace).
-  const baseline = session.contractSnapshot?.trim();
+  // after the rollback? We compare the current contract to the
+  // contract-at-rollback content stored INSIDE the phase2Snapshot. The
+  // global session.contractSnapshot field can't be used here because
+  // every validate-PASS overwrites it with the current contract — so any
+  // edit followed by a re-validate would falsely look "unchanged".
+  // Trim ignores stray whitespace.
+  const baseline = snapshot.contractAtRollback?.trim();
   const current = session.documents.projectContract?.content.trim();
   if (!baseline || !current) return false;
-  // Snapshot exists and the user is doing Done again; phase2Snapshot is
-  // present, meaning a rollback happened. If the contract is unchanged
-  // since the original PASS, restore — back to whichever Phase 2 review
-  // state the user was in (workflow / screen / wireframe).
   return (
     baseline === current &&
     (snapshot.phase === "phase2_workflow_review" ||

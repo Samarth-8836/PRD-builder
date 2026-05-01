@@ -49,10 +49,12 @@ export interface Session {
   phase: Phase;
   documents: SessionDocuments;
   chat: ChatMessage[];
-  /** Frozen baseline of the Project Contract at the moment of Phase 1 PASS.
-   *  Used to detect rollback equivalence (if the post-rollback contract
-   *  matches this baseline, the suspended Phase 2 work can be restored
-   *  as-is rather than regenerated). */
+  /** Legacy field, retained for storage compatibility. As of M10 the
+   *  rollback equivalence check uses `phase2Snapshot.contractAtRollback`
+   *  instead of this field — every validate-PASS used to overwrite this
+   *  with the current contract, which broke the "did the contract change
+   *  during rollback?" test. M11 removes this field as part of the slot
+   *  storage cut. */
   contractSnapshot?: string;
   /** Saved on rollback from Phase 2 review back to Phase 1. Holds the
    *  Phase 2 documents at the moment of rollback so they can be restored
@@ -72,6 +74,12 @@ export interface Phase2Snapshot {
    *  phase2_wireframe_review). The restore returns the session to this
    *  phase if the contract is unchanged. */
   phase: Phase;
+  /** Contract content at the moment of rollback. Used by the equivalence
+   *  check to decide whether to restore the snapshotted Phase 2 work
+   *  (contract identical) or regenerate from scratch (contract edited).
+   *  Frozen here so subsequent validate-PASS calls can't clobber it
+   *  via `setContractSnapshot`. */
+  contractAtRollback: string;
   takenAt: string;
 }
 
