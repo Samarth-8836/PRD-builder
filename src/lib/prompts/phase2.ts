@@ -246,7 +246,7 @@ Classify the user's message into ONE of two response modes:
 
 MODE: question — the user is asking about your design choices, the workflows, the screens, or wants clarification. Reply in plain prose. Do NOT propose any changes.
 
-MODE: change — the user wants something modified. Reply with a one-sentence SUMMARY of what you would do, then emit a structured <change_context> block describing the change for the drift checker. Even if you suspect the change might require contract changes, still describe it as MODE: change and let the drift checker decide — do not pre-judge whether the change is allowed.
+MODE: change — the user wants something modified. Reply with a one-sentence past-tense SUMMARY of what you would do, then emit a structured <change_context> block identifying the FIRST-IMPACT step (the earliest pipeline step whose output the change affects). The engine re-runs that step plus every step that depends on it; everything upstream is preserved.
 
 OUTPUT FORMAT — strict.
 
@@ -261,24 +261,31 @@ For MODE: change:
 MODE: change
 
 SUMMARY:
-[one-sentence description of the change you would apply]
+[one-sentence past-tense description of the change you would apply]
 
 <change_context>
-scope: workflow_change|screen_only|data_only
-target: <screen-id>
+first_impact_step: workflow|screen|wireframeData|wireframeHtml
+first_impact_item: <fanout-item-id>
 description: [factual description of what the user wants — read by the drift checker, not the user]
 </change_context>
 
+FIRST-IMPACT STEP — pick the EARLIEST step in this dependency graph whose output the change requires:
+
+- workflow → owns user workflows (what the personas can do end-to-end). Pick this when adding/removing/modifying a workflow, or when the user asks for behavior that needs a workflow that doesn't exist yet (e.g. "I'm missing a screen for managing recurring tasks" — the workflow itself is missing).
+- screen → owns the screen list and the navigation graph between screens. Pick this when the change is about which screens exist, what each screen shows, or how screens link to each other, AND the workflows are unchanged. (e.g. "rename a screen", "add a navigation link", "task-detail is missing the Mark complete button".)
+- wireframeData → owns the realistic sample content that populates the wireframe. Pick this when only the sample/dummy content needs adjusting (no structural changes). (e.g. "make the example task names shorter", "add more variety to the lists", "swap to business-themed sample data".)
+- wireframeHtml → owns the rendered HTML for one or more screens. Pick this for visual/copy/layout changes confined to specific screens, with no change to the screen list or sample data. (e.g. "make the home page show tasks grouped by date", "the cart screen is missing a checkout button".)
+
+The first_impact_item field is OPTIONAL. Use it only when first_impact_step = wireframeHtml and you can name ONE specific screen-id (lowercase kebab-case) that needs to change — this lets the engine regenerate just that one HTML file. Omit first_impact_item for any other step or when the change spans multiple screens.
+
 CRITICAL RULES:
 - The Project Contract is LOCKED during Phase 2 review. You cannot propose contract modifications. The drift checker (separate LLM call) decides whether a change is implementable without contract changes.
-- scope = workflow_change when adding/removing/modifying user workflows. Both the Workflow Map and the Screen Inventory will be re-derived. Use this when the user asks for something that needs a workflow that doesn't exist yet (e.g. "I'm missing a screen for managing recurring tasks" — the workflow itself is missing).
-- scope = screen_only when only screens or the navigation graph need updating; workflows are unchanged. Use this for "I want a different layout", "rename a screen", "add a navigation link", "the task-detail screen is missing the Mark complete button", etc.
-- scope = data_only when only the sample/dummy content shown on screens needs adjustment (no structural changes). Use this for things like "make the example task names shorter", "add more variety to the lists", "swap to business-themed sample data".
-- target field is OPTIONAL. Include it only for scope = screen_only when you can name ONE specific screen-id (lowercase kebab-case) that needs to change — this lets the wireframe stage regenerate just that one HTML file. Omit target if the change touches multiple screens or you're not sure which one.
+- Pick the EARLIEST impacted step. If the change affects workflows AND requires new screens, the first impact is workflow (because the screen step depends on the workflow step). The engine re-runs descendants automatically.
 - If the request is ambiguous or you need clarification, prefer MODE: question.
 - The first non-whitespace token of your response MUST be "MODE:".
 - Do not include any content before MODE: or any closing remarks after the change_context block.
-- Do not wrap the response in code fences.`;
+- Do not wrap the response in code fences.
+- The SUMMARY must be past-tense (e.g. "Updated the Workflow Map to include an undo flow"), not imperative — the change has already been applied to the pipeline by the time the user reads it.`;
 
 export const PHASE2_CONVERSATION_EXAMPLE_QUESTION_USER =
   "Why is task creation a separate screen instead of inline on the home view?";
@@ -296,7 +303,7 @@ SUMMARY:
 Added an undo workflow that reverses the user's most recent action.
 
 <change_context>
-scope: workflow_change
+first_impact_step: workflow
 description: Add an "Undo last action" workflow that reverses the most recent state-changing action (e.g. task complete, task delete, list archive). Each persona can undo their own most recent action.
 </change_context>`;
 
@@ -309,7 +316,7 @@ SUMMARY:
 Added a dedicated Today screen distinct from the home view.
 
 <change_context>
-scope: screen_only
+first_impact_step: screen
 description: Add a separate "today" screen showing tasks due today, distinct from the home screen which would now act as a general dashboard.
 </change_context>`;
 
@@ -322,8 +329,8 @@ SUMMARY:
 Added a Mark complete button to the task-detail screen.
 
 <change_context>
-scope: screen_only
-target: task-detail
+first_impact_step: wireframeHtml
+first_impact_item: task-detail
 description: Add a Mark complete toggle/button to the task-detail screen so the user can mark the task done from the detail view itself.
 </change_context>`;
 
@@ -336,7 +343,7 @@ SUMMARY:
 Regenerated the sample task data with shorter, more realistic one-line todos.
 
 <change_context>
-scope: data_only
+first_impact_step: wireframeData
 description: Regenerate the sample tasks with shorter, conversational one-line titles (e.g. "Buy groceries", "Reply to Anna"), keeping the same workflows and screens.
 </change_context>`;
 
@@ -356,10 +363,11 @@ For a change:
 MODE: change
 
 SUMMARY:
-[one sentence]
+[one sentence, past tense]
 
 <change_context>
-scope: workflow_change|screen_only|data_only
+first_impact_step: workflow|screen|wireframeData|wireframeHtml
+first_impact_item: <fanout-item-id only when first_impact_step = wireframeHtml>
 description: [factual description]
 </change_context>
 

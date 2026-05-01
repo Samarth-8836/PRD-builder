@@ -1,39 +1,40 @@
+import { PipelineEngine, sessionToSlots } from "@/lib/pipeline";
 import {
-  formatScreenInventory,
-  runNavValidate,
-  runScreenCorrect,
-  runScreenExtract,
-} from "@/lib/operations";
-import { finalizeScreenList } from "@/lib/parsers";
+  PRD_PIPELINE,
+  PRD_SLOT_IDS,
+  PRD_STEP_IDS,
+} from "@/lib/pipeline/configs/prd-builder";
+import { requireMarkdown } from "@/lib/pipeline/slots";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Phase, type Session } from "@/lib/storage";
+
+/**
+ * Phase 2 Stage 1b — Screen Inventory.
+ *
+ * Thin wrapper around `engine.runStep("screen")`. The engine drives the
+ * compose runner (extract substep + nav_validate substep + conditional
+ * screen_correct substep + finalizeScreenList in reduce). This wrapper
+ * translates StepProgressEvent into the legacy SSE op vocabulary
+ * (`phase2.screen_extract`, `phase2.nav_validate`, `phase2.screen_correct`,
+ * `phase2.screen_inventory`) and persists screenInventory markdown.
+ *
+ * On success transitions to phase2_screen_review. On failure rolls back
+ * to errorRollbackPhase (phase2_workflow_review by default).
+ */
 
 interface RunScreenStageInput {
   session: Session;
   sse: SSEWriter;
   signal?: AbortSignal;
-  /** Optional review feedback. Passed through to screen_extract so the
-   *  model applies the user's requested change. */
   feedback?: string;
-  /** On error, where to roll back. Defaults to phase2_workflow_review so
-   *  the user can re-trigger via Approve. */
   errorRollbackPhase?: Phase;
 }
 
-/**
- * Phase 2 Stage 1b — Screen Inventory.
- *
- *   1. screen extraction
- *   2. nav validation
- *   3. screen correction (conditional, only if validation found gaps)
- *   4. screen inventory formatting (code)
- *
- * Reads the previously-saved Workflow Map from the session. On success
- * persists screenInventory and transitions phase to phase2_screen_review.
- * On failure rolls back to errorRollbackPhase (phase2_workflow_review by
- * default).
- */
-export async function runScreenStage(input: RunScreenStageInput): Promise<void> {
+const engine = new PipelineEngine(PRD_PIPELINE);
+
+export async function runScreenStage(
+  input: RunScreenStageInput
+): Promise<void> {
   const {
     session,
     sse,
@@ -43,8 +44,6 @@ export async function runScreenStage(input: RunScreenStageInput): Promise<void> 
   } = input;
   const storage = getStorage();
   const sessionId = session.id;
-  const contract = session.documents.projectContract!.content;
-  const workflowMap = session.documents.workflowMap!.content;
 
   await storage.setPhase(sessionId, "phase2_screen_running");
   sse.send({ type: "phase", phase: "phase2_screen_running" });
@@ -56,79 +55,74 @@ export async function runScreenStage(input: RunScreenStageInput): Promise<void> 
   });
 
   try {
+    const slots = sessionToSlots(session);
+
     sse.send({
       type: "progress",
       op: "phase2.screen_extract",
       status: "started",
       note: "Deriving screens",
     });
-    let screens = await runScreenExtract({ contract, workflowMap, feedback, signal });
-    sse.send({
-      type: "progress",
-      op: "phase2.screen_extract",
-      status: "completed",
-      note: `Extracted ${screens.length} screens`,
+
+    const out = await engine.runStep({
+      stepId: PRD_STEP_IDS.screen,
+      sessionId,
+      inputs: slots,
+      feedback,
+      signal,
+      onProgress: (event) => {
+        if (event.kind !== "substep") return;
+        if (event.substepId === "extract" && event.status === "completed") {
+          sse.send({
+            type: "progress",
+            op: "phase2.screen_extract",
+            status: "completed",
+            note: "Screens extracted",
+          });
+          sse.send({
+            type: "progress",
+            op: "phase2.nav_validate",
+            status: "started",
+            note: "Validating navigation graph",
+          });
+        }
+        if (event.substepId === "validate" && event.status === "completed") {
+          sse.send({
+            type: "progress",
+            op: "phase2.nav_validate",
+            status: "completed",
+            note: "Navigation graph validated",
+          });
+        }
+        if (event.substepId === "correct") {
+          if (event.status === "skipped") {
+            // No gaps — nothing to surface.
+            return;
+          }
+          if (event.status === "started") {
+            sse.send({
+              type: "progress",
+              op: "phase2.screen_correct",
+              status: "started",
+              note: "Patching screens to close gaps",
+            });
+          }
+          if (event.status === "completed") {
+            sse.send({
+              type: "progress",
+              op: "phase2.screen_correct",
+              status: "completed",
+              note: "Screens updated",
+            });
+          }
+        }
+      },
     });
 
-    sse.send({
-      type: "progress",
-      op: "phase2.nav_validate",
-      status: "started",
-      note: "Validating navigation graph",
-    });
-    const validation = await runNavValidate({ workflowMap, screens, signal });
-    sse.send({
-      type: "progress",
-      op: "phase2.nav_validate",
-      status: "completed",
-      note:
-        validation.status === "ok"
-          ? "Navigation graph is complete"
-          : `Found ${validation.gaps.length} gap${validation.gaps.length === 1 ? "" : "s"}`,
-    });
-
-    if (validation.status === "gaps") {
-      sse.send({
-        type: "progress",
-        op: "phase2.screen_correct",
-        status: "started",
-        note: "Patching screens to close gaps",
-      });
-      screens = await runScreenCorrect({
-        workflowMap,
-        screens,
-        gaps: validation.gaps,
-        signal,
-      });
-      sse.send({
-        type: "progress",
-        op: "phase2.screen_correct",
-        status: "completed",
-        note: `Updated to ${screens.length} screens`,
-      });
-    }
-
-    // Code-only fixup: drop any nav targets that don't exist as screens.
-    // Defends against a screen_correct pass that itself emits a dangling
-    // nav reference. The wireframe stage's smoke test would catch this
-    // later, but cleaning up here keeps the saved Screen Inventory
-    // internally consistent.
-    const finalized = finalizeScreenList(screens);
-    screens = finalized.screens;
-    if (finalized.droppedNav.length > 0) {
-      const note =
-        finalized.droppedNav.length === 1
-          ? `Dropped 1 dangling nav link (${finalized.droppedNav[0]!.from} → ${finalized.droppedNav[0]!.to})`
-          : `Dropped ${finalized.droppedNav.length} dangling nav links`;
-      sse.send({
-        type: "progress",
-        op: "phase2.screen_finalize",
-        status: "completed",
-        note,
-      });
-    }
-
-    const screenInventory = formatScreenInventory(screens);
+    const screenInventory = requireMarkdown(
+      out,
+      PRD_SLOT_IDS.screenInventory
+    ).content;
     const siSession = await storage.setDocument(
       sessionId,
       "screenInventory",

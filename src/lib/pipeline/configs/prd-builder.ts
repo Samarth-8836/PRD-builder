@@ -12,6 +12,7 @@
  */
 
 import {
+  finalizeScreenList,
   parseContract,
   parseDummyData,
   parseDriftCheck,
@@ -123,47 +124,35 @@ function formatDataShape(data: DummyData): string {
 }
 
 // ---------------------------------------------------------------------------
-// Review chat classification: bridge from the existing parsePhase2Conversation
-// (which still emits ChangeScope) to the new firstImpactStepId shape. The
-// mapping is purely scope -> step id; M10 replaces this with a direct
-// firstImpactStepId emission and updates the prompt accordingly.
+// Review chat classification — passthrough over parsePhase2Conversation
+// with the registered step ids supplied as the validation allow-list.
 // ---------------------------------------------------------------------------
+
+const KNOWN_STEP_IDS = [
+  STEP_WORKFLOW,
+  STEP_SCREEN,
+  STEP_WIREFRAME_DATA,
+  STEP_WIREFRAME_HTML,
+] as const;
 
 function classifyReviewChat(
   text: string
 ): ParseResult<ReviewChatClassification> {
-  const inner = parsePhase2Conversation(text);
+  const inner = parsePhase2Conversation(text, {
+    knownStepIds: KNOWN_STEP_IDS as readonly string[],
+  });
   if (!inner.ok) return fail(inner.error);
   const v: Phase2Conversation = inner.value;
   if (v.mode === "question") {
     return ok({ mode: "question", answer: v.answer });
   }
-  // mode === "change"
-  let firstImpactStepId: StepId;
-  switch (v.scope) {
-    case "workflow_change":
-      firstImpactStepId = STEP_WORKFLOW;
-      break;
-    case "screen_only":
-      firstImpactStepId = STEP_SCREEN;
-      break;
-    case "data_only":
-      firstImpactStepId = STEP_WIREFRAME_DATA;
-      break;
-  }
-  // For wireframe_review × screen_only with a target, the engine treats
-  // the cascade as a single-item regen of the wireframeHtml fanout. The
-  // first-impact step is then wireframeHtml, not screen. The classifier
-  // can't distinguish without seeing current state, so we record the
-  // raw target on the classification and let the engine decide.
-  const result: ReviewChatClassification = {
+  return ok({
     mode: "change",
     summary: v.summary,
     description: v.description,
-    firstImpactStepId,
-    firstImpactItemId: v.target,
-  };
-  return ok(result);
+    firstImpactStepId: v.firstImpactStepId as StepId,
+    firstImpactItemId: v.firstImpactItemId,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -400,7 +389,12 @@ ${gaps.map((g) => `- ${g}`).join("\n")}
           },
         ],
         reduce: (sub) => {
-          const screens = (sub.correct ?? sub.extract) as ScreenSpec[];
+          const raw = (sub.correct ?? sub.extract) as ScreenSpec[];
+          // Drop any dangling nav targets that nav_validate / screen_correct
+          // didn't fix. Defends the saved Screen Inventory against
+          // intra-list inconsistencies the wireframe stage would otherwise
+          // surface as broken hrefs in the smoke test.
+          const { screens } = finalizeScreenList(raw);
           return {
             [SLOT_SCREEN_INVENTORY]: makeMarkdown(formatScreenInventory(screens)),
           };
@@ -496,6 +490,10 @@ ${screensBlock}
 </screens>`;
             },
             parser: parseHtmlDocument,
+            // Single-item regen (cascade with target set) keeps the
+            // previously-generated index.html. The reduce function pulls
+            // the prior shell out of ctx.inputs[wireframeFiles].
+            skipIf: (_sub, ctx) => Boolean(ctx.target),
           },
           {
             id: "screens",
@@ -571,7 +569,28 @@ ${dataShape}
           },
         ],
         reduce: (sub, ctx) => {
-          const shell = sub.shell as string;
+          // Shell substep may be skipped during single-item regen
+          // (cascade with ctx.target set). Reuse the prior index.html
+          // from the existing fileset in that case.
+          let shell: string;
+          if (typeof sub.shell === "string") {
+            shell = sub.shell;
+          } else {
+            const priorFileset = ctx.inputs[SLOT_WIREFRAME_FILES];
+            if (!priorFileset || priorFileset.kind !== "fileset") {
+              throw new Error(
+                "wireframeHtml reduce: shell substep was skipped but no prior fileset available to reuse index.html"
+              );
+            }
+            const priorShell = priorFileset.files["index.html"];
+            if (!priorShell) {
+              throw new Error(
+                "wireframeHtml reduce: prior fileset has no index.html"
+              );
+            }
+            shell = priorShell;
+          }
+
           const screenFiles = sub.screens as Record<string, string>;
           const data = requireJson(
             ctx.inputs,

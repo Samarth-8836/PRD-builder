@@ -189,7 +189,8 @@ export class PipelineEngine {
       sessionId: args.sessionId,
       inputs: args.inputs,
       feedback: args.feedback,
-      target: args.target,
+      target: args.target ?? args.onlyItemId,
+      priorResults: args.priorResults,
     };
 
     const { runSingle, runFanout, runCompose } = await import(

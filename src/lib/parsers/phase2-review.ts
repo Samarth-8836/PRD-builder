@@ -1,10 +1,8 @@
 import { fail, ok, type ParseResult } from "./types";
 
 // ---------------------------------------------------------------------------
-// Phase 2 conversation (M5)
+// Phase 2 conversation (M5, refactored M10 — first-impact terminology)
 // ---------------------------------------------------------------------------
-
-export type ChangeScope = "workflow_change" | "screen_only" | "data_only";
 
 export interface Phase2Question {
   mode: "question";
@@ -14,12 +12,16 @@ export interface Phase2Question {
 export interface Phase2Change {
   mode: "change";
   summary: string;
-  scope: ChangeScope;
+  /** Step id the change first applies to — the model picks one of the
+   *  registered step ids in the active pipeline. The engine invalidates
+   *  this step + all transitive descendants and re-runs them in topo
+   *  order. */
+  firstImpactStepId: string;
   description: string;
-  /** Optional screen id (lowercase kebab-case) the change targets — used
-   *  by the wireframe-stage cascade to regenerate just one screen's HTML
-   *  for `scope: screen_only`. */
-  target?: string;
+  /** Optional sub-target inside a fanout step (e.g. one screen id within
+   *  the wireframeHtml step's per-screen fanout). Lets the engine
+   *  regenerate just that one fanout item. */
+  firstImpactItemId?: string;
 }
 
 export type Phase2Conversation = Phase2Question | Phase2Change;
@@ -28,13 +30,22 @@ const MODE_RE = /^\s*(?:\*\*\s*)?mode\s*(?:\*\*)?\s*:\s*(question|change)\s*\n/i
 const SUMMARY_RE = /^\s*(?:\*\*\s*)?summary\s*(?:\*\*)?\s*:\s*\n/i;
 const CHANGE_CONTEXT_OPEN_RE = /\n\s*<change_context>\s*\n?/i;
 const CHANGE_CONTEXT_CLOSE_RE = /\n?\s*<\/change_context>\s*$/i;
-const SCOPE_RE = /(?:^|\n)\s*scope\s*:\s*(workflow_change|screen_only|data_only)\s*$/im;
-const TARGET_RE = /(?:^|\n)\s*target\s*:\s*([a-z][a-z0-9-]*)\s*$/im;
+const FIRST_IMPACT_STEP_RE =
+  /(?:^|\n)\s*first_impact_step\s*:\s*([a-zA-Z][a-zA-Z0-9_-]*)\s*$/im;
+const FIRST_IMPACT_ITEM_RE =
+  /(?:^|\n)\s*first_impact_item\s*:\s*([a-z][a-z0-9-]*)\s*$/im;
 const DESCRIPTION_RE = /(?:^|\n)\s*description\s*:\s*(.+?)\s*$/im;
-const VALID_SCOPES: ChangeScope[] = ["workflow_change", "screen_only", "data_only"];
+
+export interface ParsePhase2Options {
+  /** Validates first_impact_step against this allow-list of step ids
+   *  registered in the active pipeline. When omitted, any non-empty
+   *  identifier is accepted. */
+  knownStepIds?: readonly string[];
+}
 
 export function parsePhase2Conversation(
-  input: string
+  input: string,
+  options: ParsePhase2Options = {}
 ): ParseResult<Phase2Conversation> {
   const stripped = stripCodeFences(input).trim();
   if (!stripped) return fail("Model response was empty");
@@ -77,16 +88,22 @@ export function parsePhase2Conversation(
   const closeMatch = ccTail.match(CHANGE_CONTEXT_CLOSE_RE);
   const ccBody = (closeMatch ? ccTail.slice(0, closeMatch.index) : ccTail).trim();
 
-  const scopeMatch = ccBody.match(SCOPE_RE);
-  if (!scopeMatch) {
-    return fail(
-      `<change_context> is missing "scope: <one of ${VALID_SCOPES.join("|")}>"`
-    );
+  const stepMatch = ccBody.match(FIRST_IMPACT_STEP_RE);
+  if (!stepMatch) {
+    const allow =
+      options.knownStepIds && options.knownStepIds.length > 0
+        ? `<one of: ${options.knownStepIds.join(", ")}>`
+        : "<step-id>";
+    return fail(`<change_context> is missing "first_impact_step: ${allow}"`);
   }
-  const scope = scopeMatch[1]!.toLowerCase() as ChangeScope;
-  if (!VALID_SCOPES.includes(scope)) {
+  const firstImpactStepId = stepMatch[1]!;
+  if (
+    options.knownStepIds &&
+    options.knownStepIds.length > 0 &&
+    !options.knownStepIds.includes(firstImpactStepId)
+  ) {
     return fail(
-      `Invalid scope "${scope}"; must be one of ${VALID_SCOPES.join(", ")}`
+      `Unknown first_impact_step "${firstImpactStepId}"; must be one of ${options.knownStepIds.join(", ")}`
     );
   }
 
@@ -95,10 +112,16 @@ export function parsePhase2Conversation(
   const description = descMatch[1]!.trim();
   if (!description) return fail('<change_context> "description:" was empty');
 
-  const targetMatch = ccBody.match(TARGET_RE);
-  const target = targetMatch?.[1]?.toLowerCase();
+  const itemMatch = ccBody.match(FIRST_IMPACT_ITEM_RE);
+  const firstImpactItemId = itemMatch?.[1]?.toLowerCase();
 
-  return ok({ mode: "change", summary, scope, description, target });
+  return ok({
+    mode: "change",
+    summary,
+    firstImpactStepId,
+    description,
+    firstImpactItemId,
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -78,7 +78,6 @@ Interaction type: Creates, edits, completes tasks; organizes them into lists; se
 **List** — A grouping of related tasks (e.g. "Work", "Home"). Individual User creates, renames, archives, reorders.
 
 ## Boundaries
-- No team / multi-user features
 - No calendar integration (Google Calendar, Outlook)
 - No advanced project management (Gantt charts, dependencies)
 - No time tracking or billing`;
@@ -208,7 +207,6 @@ Interaction type: Creates, edits, completes tasks; organizes them into lists; se
 **Tag** — A label that can be applied to tasks across lists. Individual User creates, deletes, applies, and removes tags.
 
 ## Boundaries
-- No team / multi-user features
 - No calendar integration (Google Calendar, Outlook)
 - No advanced project management (Gantt charts, dependencies)
 - No time tracking or billing`;

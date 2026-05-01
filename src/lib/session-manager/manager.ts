@@ -16,7 +16,7 @@ import {
   type Session,
   type SessionSummary,
 } from "@/lib/storage";
-import { runCascade } from "./cascade";
+import { runPhase2Cascade } from "./phase2-cascade";
 import { runScreenStage } from "./screen-stage";
 import { runWireframeStage } from "./wireframe-stage";
 import { runWorkflowStage } from "./workflow-stage";
@@ -248,6 +248,16 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Handles a chat message during a review-style state. Today this is
+   * called from any phase2_*_review state. M12 wires iteration-on-
+   * complete so this same handler runs from `complete` too — the
+   * structure (classify → drift-check → dispatch by first-impact step)
+   * is identical; only the rollback/finalization semantics differ.
+   * Drift check + cascade dispatch are generalized: they only depend on
+   * the current contract content and the first-impact step id, not on
+   * the specific phase.
+   */
   private async handlePhase2ReviewChat(
     session: Session,
     message: string,
@@ -289,7 +299,7 @@ export class SessionManager {
       classification: drift.classification,
       driftType: drift.type,
       reason: drift.reason,
-      scope: conv.scope,
+      scope: conv.firstImpactStepId,
     });
 
     if (drift.classification === "DRIFT") {
@@ -305,14 +315,14 @@ export class SessionManager {
       return;
     }
 
-    // COMPATIBLE — run the cascade.
-    await runCascade({
+    // COMPATIBLE — dispatch the cascade by first-impact step.
+    await runPhase2Cascade({
       session,
       sse,
       signal,
-      scope: conv.scope,
+      firstImpactStepId: conv.firstImpactStepId,
+      firstImpactItemId: conv.firstImpactItemId,
       description: conv.description,
-      target: conv.target,
       phase: session.phase,
     });
   }

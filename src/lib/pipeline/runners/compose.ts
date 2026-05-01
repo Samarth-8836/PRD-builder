@@ -38,7 +38,7 @@ export async function runCompose(
   const subResults: Record<string, unknown> = { ...(ctx.subResults ?? {}) };
 
   for (const substep of runner.substeps) {
-    if (substep.kind === "single" && substep.skipIf?.(subResults)) {
+    if (substep.kind === "single" && substep.skipIf?.(subResults, ctx)) {
       onSubstep?.(substep.id, "skipped");
       continue;
     }
@@ -101,11 +101,20 @@ async function runSubstep(
   const itemIds = items.map((item, idx) => substep.itemId(item, idx));
   const concurrency = substep.concurrency ?? 1;
 
+  // Honor cascade narrowing: when ctx.target identifies a single item,
+  // re-run only that item and reuse ctx.priorResults for the rest.
+  const onlyItemId = ctx.target;
+  const priorResults = ctx.priorResults;
+
   const nodes = items.map((item, idx) => {
     const id = itemIds[idx]!;
     return {
       id,
       run: async (): Promise<unknown> => {
+        if (onlyItemId && id !== onlyItemId) {
+          const prior = priorResults?.[id];
+          if (prior !== undefined) return prior;
+        }
         opts.onFanoutItem?.(id, "started");
         try {
           const userMessage = substep.buildUserMessage(

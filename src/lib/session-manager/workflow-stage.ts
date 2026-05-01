@@ -1,43 +1,37 @@
-import { executeDAG, type NodeResult } from "@/lib/dag";
+import { PipelineEngine, sessionToSlots } from "@/lib/pipeline";
 import {
-  formatWorkflowMap,
-  runWorkflowDetail,
-  runWorkflowDiscovery,
-  type DetailedWorkflow,
-} from "@/lib/operations";
-import { type WorkflowDetail, type WorkflowStub } from "@/lib/parsers";
+  PRD_PIPELINE,
+  PRD_SLOT_IDS,
+  PRD_STEP_IDS,
+} from "@/lib/pipeline/configs/prd-builder";
+import { requireMarkdown } from "@/lib/pipeline/slots";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Phase, type Session } from "@/lib/storage";
 
-// Kept at 1 for free-tier TPM safety (Groq free is 8K TPM; back-to-back
-// stage runs in cascades easily blow past parallel TPM bursts). Bump on
-// tiers with higher capacity.
-const DETAIL_CONCURRENCY = 1;
+/**
+ * Phase 2 Stage 1a — Workflow Map.
+ *
+ * Thin wrapper around `engine.runStep("workflow")`. The engine drives the
+ * compose runner (discovery substep + workflow_detail fanout substep);
+ * this wrapper translates StepProgressEvent into the legacy SSE op
+ * vocabulary (`phase2.workflow_discovery`, `phase2.workflow_detail`,
+ * `phase2.workflow_map`) so the UI doesn't change. Persists workflowMap
+ * markdown via storage.setDocument and manages phase transitions.
+ *
+ * On success transitions to phase2_workflow_review. On failure rolls
+ * back to errorRollbackPhase (phase1_complete by default).
+ */
 
 interface RunWorkflowStageInput {
   session: Session;
   sse: SSEWriter;
   signal?: AbortSignal;
-  /** Optional review feedback. When present, passed through to
-   *  workflow_discovery so the model applies the user's requested change. */
   feedback?: string;
-  /** On error, where to roll the session back to. Defaults to
-   *  phase1_complete (initial run). For cascades from a later review state,
-   *  pass the prior review phase so the user can re-trigger via Approve. */
   errorRollbackPhase?: Phase;
 }
 
-/**
- * Phase 2 Stage 1a — Workflow Map.
- *
- *   1. workflow discovery
- *   2. workflow detail (fan-out per workflow via executeDAG)
- *   3. workflow map formatting (code)
- *
- * On success persists workflowMap and transitions phase to
- * phase2_workflow_review. On failure rolls back to errorRollbackPhase
- * (phase1_complete by default).
- */
+const engine = new PipelineEngine(PRD_PIPELINE);
+
 export async function runWorkflowStage(
   input: RunWorkflowStageInput
 ): Promise<void> {
@@ -50,7 +44,6 @@ export async function runWorkflowStage(
   } = input;
   const storage = getStorage();
   const sessionId = session.id;
-  const contract = session.documents.projectContract!.content;
 
   await storage.setPhase(sessionId, "phase2_workflow_running");
   sse.send({ type: "phase", phase: "phase2_workflow_running" });
@@ -62,47 +55,77 @@ export async function runWorkflowStage(
   });
 
   try {
+    const slots = sessionToSlots(session);
+
+    // Track totals for the legacy "N/M workflows detailed" ticker.
+    let detailTotal = 0;
+    let detailCompleted = 0;
+    let stubsCount = 0;
+
     sse.send({
       type: "progress",
       op: "phase2.workflow_discovery",
       status: "started",
       note: "Identifying workflows",
     });
-    const stubs = await runWorkflowDiscovery({ contract, feedback, signal });
-    sse.send({
-      type: "progress",
-      op: "phase2.workflow_discovery",
-      status: "completed",
-      note: `Identified ${stubs.length} workflows`,
+
+    const out = await engine.runStep({
+      stepId: PRD_STEP_IDS.workflow,
+      sessionId,
+      inputs: slots,
+      feedback,
+      signal,
+      onProgress: (event) => {
+        if (event.kind === "substep") {
+          if (event.substepId === "discovery" && event.status === "completed") {
+            sse.send({
+              type: "progress",
+              op: "phase2.workflow_discovery",
+              status: "completed",
+              note:
+                stubsCount > 0
+                  ? `Identified ${stubsCount} workflows`
+                  : "Workflows identified",
+            });
+            sse.send({
+              type: "progress",
+              op: "phase2.workflow_detail",
+              status: "started",
+              note: "Detailing workflows",
+            });
+          }
+          if (event.substepId === "detail" && event.status === "completed") {
+            sse.send({
+              type: "progress",
+              op: "phase2.workflow_detail",
+              status: "completed",
+              note: `All ${detailCompleted} workflows detailed`,
+            });
+          }
+        }
+        if (event.kind === "fanout_item") {
+          if (event.status === "started") detailTotal += 1;
+          if (event.status === "completed") {
+            detailCompleted += 1;
+            sse.send({
+              type: "progress",
+              op: "phase2.workflow_detail",
+              status: "started",
+              note: `${detailCompleted}/${detailTotal} workflows detailed`,
+            });
+            // Capture the post-discovery stub count (== detailTotal).
+            stubsCount = detailTotal;
+          }
+        }
+      },
     });
 
-    sse.send({
-      type: "progress",
-      op: "phase2.workflow_detail",
-      status: "started",
-      note: `Detailing ${stubs.length} workflows`,
-    });
-    const details = await detailBatch(contract, stubs, signal, (completed, total) => {
-      sse.send({
-        type: "progress",
-        op: "phase2.workflow_detail",
-        status: "started",
-        note: `${completed}/${total} workflows detailed`,
-      });
-    });
-    sse.send({
-      type: "progress",
-      op: "phase2.workflow_detail",
-      status: "completed",
-      note: `All ${details.length} workflows detailed`,
-    });
-
-    const detailed: DetailedWorkflow[] = stubs.map((stub, i) => ({
-      ...stub,
-      detail: details[i]!,
-    }));
-    const workflowMap = formatWorkflowMap(detailed);
-    const wmSession = await storage.setDocument(sessionId, "workflowMap", workflowMap);
+    const workflowMap = requireMarkdown(out, PRD_SLOT_IDS.workflowMap).content;
+    const wmSession = await storage.setDocument(
+      sessionId,
+      "workflowMap",
+      workflowMap
+    );
     sse.send({
       type: "document",
       name: "workflowMap",
@@ -135,43 +158,4 @@ export async function runWorkflowStage(
     });
     throw err;
   }
-}
-
-async function detailBatch(
-  contract: string,
-  stubs: WorkflowStub[],
-  signal: AbortSignal | undefined,
-  onProgress: (completed: number, total: number) => void
-): Promise<WorkflowDetail[]> {
-  let completed = 0;
-  const nodes = stubs.map((stub, i) => ({
-    id: `detail-${i}`,
-    run: async () => {
-      const detail = await runWorkflowDetail({ contract, stub, signal });
-      completed += 1;
-      onProgress(completed, stubs.length);
-      return detail;
-    },
-  }));
-
-  const results = await executeDAG(nodes, {
-    concurrency: DETAIL_CONCURRENCY,
-    signal,
-  });
-
-  const failed: string[] = [];
-  const ordered: WorkflowDetail[] = [];
-  for (let i = 0; i < stubs.length; i++) {
-    const r = results.get(`detail-${i}`) as NodeResult<WorkflowDetail> | undefined;
-    if (!r || r.status !== "completed" || r.value === undefined) {
-      failed.push(`"${stubs[i]!.name}" (${r?.error?.message ?? "unknown error"})`);
-      ordered.push({} as WorkflowDetail);
-      continue;
-    }
-    ordered.push(r.value);
-  }
-  if (failed.length > 0) {
-    throw new Error(`Workflow detail batch failed for: ${failed.join("; ")}`);
-  }
-  return ordered;
 }

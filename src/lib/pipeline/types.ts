@@ -81,6 +81,10 @@ export interface StepContext {
   /** Optional sub-target id (e.g. one fanout item like a screen id) when a
    *  cascade narrows the scope to a single item. */
   target?: string;
+  /** Optional prior fanout item results keyed by itemId. When `target` is
+   *  set, fanout runners and fanout substeps reuse these for non-target
+   *  items rather than re-running them. */
+  priorResults?: Record<string, unknown>;
   /** Sub-result accumulator for compose runners. Substep id -> parsed value. */
   subResults?: Record<string, unknown>;
 }
@@ -144,9 +148,11 @@ export interface ComposeSingleSubstep {
     sub: Record<string, unknown>
   ) => string;
   parser: (text: string) => ParseResult<unknown>;
-  /** Skip if predicate returns true. Useful for conditional substeps like
-   *  "only run screen_correct if nav_validate found gaps". */
-  skipIf?: (sub: Record<string, unknown>) => boolean;
+  /** Skip if predicate returns true. Receives both the sub-result map
+   *  and the StepContext so substeps can skip based on cascade-target
+   *  state (e.g. skip the shell rebuild when only one fanout item is
+   *  being regenerated). */
+  skipIf?: (sub: Record<string, unknown>, ctx: StepContext) => boolean;
   maxAttempts?: number;
 }
 
