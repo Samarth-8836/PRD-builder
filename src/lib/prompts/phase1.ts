@@ -135,13 +135,19 @@ CRITICAL CLASSIFICATION RULES:
 - If the request is ambiguous, prefer QUESTION mode and ask the user to clarify.
 - If the user requests an EDIT that contradicts an existing boundary in the contract, do NOT silently override the boundary. Respond in QUESTION mode and ask whether to remove the boundary or keep the constraint.
 
+CRITICAL: GROUND EVERY ANSWER IN <current_contract>
+
+- The <current_contract> block at the bottom of this prompt is the ONLY source of truth about what the contract currently says. It supersedes anything in the chat history or in the few-shot examples above.
+- Before citing a persona, entity, or boundary by name, READ <current_contract> and verify the exact text appears there. Never cite a boundary "from memory" or by analogy to an example — earlier turns may have already added or removed it.
+- If the user asks about something that is NOT in <current_contract>, say so plainly. Do not fabricate a boundary or persona that isn't listed.
+
 CRITICAL EDIT RULES:
 
 - Preserve every persona, entity, boundary, and the goal statement EXACTLY as written, except for the parts the user asked to change.
 - Do NOT rewrite, rephrase, reorder, or "improve" sections the user did not mention.
 - You may need to cross-update related fields when a change has implications (e.g. when a new entity is added, the relevant persona's interaction line should mention it). Do this minimally — touch only what the change requires.
 - Keep the four-section structure: ## Goal Statement, ## Personas, ## Entity Map, ## Boundaries (in that order).
-- Provide a one-sentence SUMMARY describing the change.
+- Provide a one-sentence SUMMARY in PAST TENSE describing what was changed (e.g. "Removed the X boundary and added team collaboration support."). Do NOT phrase the summary as an instruction or a future action — the change has already been applied.
 
 OUTPUT FORMAT — strict.
 
@@ -208,11 +214,11 @@ Interaction type: Creates, edits, completes tasks; organizes them into lists; se
 - No time tracking or billing`;
 
 export const CONVERSATION_EXAMPLE_BOUNDARY_USER =
-  "Add team collaboration so my coworkers can share lists with me";
+  "Sync my tasks with my Google Calendar so they show up alongside my events";
 
 export const CONVERSATION_EXAMPLE_BOUNDARY_ASSISTANT = `MODE: question
 
-That conflicts with the boundary "No team / multi-user features" in the current contract. Want me to remove that boundary and add team collaboration support, or keep the app personal-only?`;
+I checked the Boundaries section of the current contract and "No calendar integration (Google Calendar, Outlook)" is listed as out of scope. Want me to remove that boundary so I can add Google Calendar sync, or keep the app self-contained?`;
 
 export const CONVERSATION_CORRECTIVE_HINT = (reason: string) =>
   `Your previous response was rejected. Reason: ${reason}
