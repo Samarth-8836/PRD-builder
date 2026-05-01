@@ -16,10 +16,8 @@ export type {
   StepProgressEvent,
   RunStepArgs,
 } from "./engine";
-export { sessionToSlots, extractDummyData } from "./adapter";
 export {
   describe as describeLifecycle,
-  toLegacyPhase,
   assertTransition,
   canTransition,
   LifecycleTransitionError,

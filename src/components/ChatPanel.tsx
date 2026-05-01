@@ -3,8 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import { DriftBanner } from "./DriftBanner";
 import { rollbackToPhase1, sendChatMessage } from "@/hooks/useSSE";
+import { PRD_PIPELINE } from "@/lib/pipeline/configs/prd-builder";
+import type { StepConfig } from "@/lib/pipeline/types";
 import { useChatStore } from "@/stores/chat";
 import { useSessionStore } from "@/stores/session";
+
+const CONFIG = PRD_PIPELINE;
+const STEP_INDEX: ReadonlyMap<string, StepConfig> = new Map(
+  CONFIG.steps.map((s) => [String(s.id), s] as const)
+);
 
 export function ChatPanel() {
   const messages = useChatStore((s) => s.messages);
@@ -22,12 +29,10 @@ export function ChatPanel() {
     });
   }, [messages.length, pendingAssistant.length, streaming, drift]);
 
+  const state = current?.state;
   const blocked = drift?.classification === "DRIFT";
-  const inWorkflowReview = current?.phase === "phase2_workflow_review";
-  const inScreenReview = current?.phase === "phase2_screen_review";
-  const inWireframeReview = current?.phase === "phase2_wireframe_review";
-  const inAnyReview = inWorkflowReview || inScreenReview || inWireframeReview;
-  const isComplete = current?.phase === "complete";
+  const inAnyReview = state?.kind === "review";
+  const isComplete = state?.kind === "complete";
   const canRollback = inAnyReview;
 
   async function submit() {
@@ -63,19 +68,12 @@ export function ChatPanel() {
 
   const showPlaceholder = messages.length === 0 && !streaming && !pendingAssistant;
   const showThinking = streaming && !pendingAssistant;
-  const placeholder = blocked
-    ? "Change blocked. Roll back to Phase 1 to continue editing."
-    : isComplete
-      ? "Session is complete. Roll back to Phase 1 to revise."
-      : current
-        ? inWireframeReview
-          ? "Ask about the wireframe, request a content tweak, or change a screen..."
-          : inScreenReview
-            ? "Ask about the screens or request a change..."
-            : inWorkflowReview
-              ? "Ask about the workflows or request a change..."
-              : "Ask a question or request an edit..."
-        : "e.g. I want to build a simple todo app";
+  const placeholder = computePlaceholder({
+    blocked,
+    isComplete,
+    state,
+    hasSession: Boolean(current),
+  });
 
   return (
     <div className="flex h-full flex-col">
@@ -147,6 +145,28 @@ export function ChatPanel() {
       </div>
     </div>
   );
+}
+
+function computePlaceholder(args: {
+  blocked: boolean;
+  isComplete: boolean;
+  state: import("@/lib/pipeline/state").SessionLifecycle | undefined;
+  hasSession: boolean;
+}): string {
+  if (args.blocked) {
+    return "Change blocked. Roll back to Phase 1 to continue editing.";
+  }
+  if (args.isComplete) {
+    return "Session is complete. Roll back to Phase 1 to revise.";
+  }
+  if (!args.hasSession) {
+    return CONFIG.ui?.initialChatPlaceholder ?? "Type a one-line product idea";
+  }
+  if (args.state?.kind === "review") {
+    const step = STEP_INDEX.get(String(args.state.stepId));
+    if (step?.reviewPlaceholder) return step.reviewPlaceholder;
+  }
+  return "Ask a question or request an edit...";
 }
 
 function bubbleClass(role: "user" | "assistant" | "system", streaming = false): string {

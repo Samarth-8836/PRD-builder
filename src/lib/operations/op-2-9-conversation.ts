@@ -3,6 +3,8 @@ import {
   parsePhase2Conversation,
   type Phase2Conversation,
 } from "@/lib/parsers";
+import { PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { getMarkdownContent } from "@/lib/pipeline/slots";
 import type { Session } from "@/lib/storage";
 import { execute } from "./executor";
 
@@ -29,9 +31,9 @@ export async function runPhase2Conversation(
   const prompt = getPrompt("phase2.conversation");
   const fewShot = prompt.fewShot ?? [];
 
-  const contract = session.documents.projectContract?.content ?? "";
-  const workflowMap = session.documents.workflowMap?.content ?? "";
-  const screenInventory = session.documents.screenInventory?.content ?? "";
+  const contract = getMarkdownContent(session.slots, PRD_SLOT_IDS.projectContract) ?? "";
+  const workflowMap = getMarkdownContent(session.slots, PRD_SLOT_IDS.workflowMap) ?? "";
+  const screenInventory = getMarkdownContent(session.slots, PRD_SLOT_IDS.screenInventory) ?? "";
 
   let systemWithDocs = `${prompt.system}
 
@@ -47,12 +49,13 @@ ${workflowMap.trim()}
 ${screenInventory.trim()}
 </screen_inventory>`;
 
-  if (session.wireframe) {
-    const screenIds = Object.keys(session.wireframe.files)
+  const wireframe = session.slots[PRD_SLOT_IDS.wireframeFiles];
+  if (wireframe && wireframe.kind === "fileset") {
+    const screenIds = Object.keys(wireframe.files)
       .filter((f) => f.endsWith(".html") && f !== "index.html")
       .map((f) => f.replace(/\.html$/, ""));
     systemWithDocs += `\n\n<wireframe_state>
-A clickable wireframe has been generated (version ${session.wireframe.version}). Screen ids with rendered HTML files: ${screenIds.join(", ")}.
+A clickable wireframe has been generated (version ${wireframe.version}). Screen ids with rendered HTML files: ${screenIds.join(", ")}.
 </wireframe_state>`;
   }
 

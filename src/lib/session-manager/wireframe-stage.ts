@@ -1,30 +1,26 @@
-import { PipelineEngine, sessionToSlots } from "@/lib/pipeline";
+import { PipelineEngine } from "@/lib/pipeline";
 import {
   PRD_PIPELINE,
   PRD_SLOT_IDS,
   PRD_STEP_IDS,
 } from "@/lib/pipeline/configs/prd-builder";
-// Engine is constructed once at module load — PRD_PIPELINE is the only
-// consumer here.
 import { requireFileset, requireJson } from "@/lib/pipeline/slots";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
+import type { SlotPayload } from "@/lib/pipeline/types";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Session } from "@/lib/storage";
 
 /**
  * Phase 2 Stage 2 — Wireframe.
  *
- * Thin wrapper around the PipelineEngine. Walks two engine steps:
- *   `wireframeData`  — produces the JSON sample data
- *   `wireframeHtml`  — composes index.html + per-screen HTML files
+ * Walks two engine steps:
+ *   `wireframeData`  — produces the JSON sample data slot
+ *   `wireframeHtml`  — composes index.html + per-screen HTML files into the
+ *                      wireframeFiles fileset slot
  *
- * Storage and SSE are owned by this wrapper (the engine is pure compute).
- * The wrapper preserves the legacy SSE event vocabulary
- * (`progress` op = `phase2.dummy_data`, `phase2.wireframe_shell`,
- * `phase2.screen_html`, `phase2.wireframe_smoke`, `wireframe_ready`) so
- * the UI doesn't need to change.
- *
- * On success persists the wireframe artifact and transitions phase to
- * phase2_wireframe_review. On failure rolls back to phase2_screen_review.
+ * Persists both slots and emits the legacy progress vocabulary so the UI
+ * doesn't need to change. On success transitions to review:wireframeHtml.
+ * On failure rolls back to review:screen.
  */
 
 interface RunWireframeStageInput {
@@ -42,8 +38,12 @@ export async function runWireframeStage(
   const storage = getStorage();
   const sessionId = session.id;
 
-  await storage.setPhase(sessionId, "phase2_wireframe_running");
-  sse.send({ type: "phase", phase: "phase2_wireframe_running" });
+  const runningDataState: SessionLifecycle = {
+    kind: "running",
+    stepId: PRD_STEP_IDS.wireframeData,
+  };
+  await storage.setState(sessionId, runningDataState);
+  sse.send({ type: "state", state: runningDataState });
   sse.send({
     type: "progress",
     op: "phase2.wireframe",
@@ -52,12 +52,7 @@ export async function runWireframeStage(
   });
 
   try {
-    // Build slot view from current session state.
-    const slots = sessionToSlots(session);
-
-    // Step 1: wireframeData (single, gate=auto). Output stays in memory;
-    // it's wrapped into data.js inside the wireframeFiles fileset by the
-    // wireframeHtml step's reduce function.
+    // Step 1: wireframeData
     sse.send({
       type: "progress",
       op: "phase2.dummy_data",
@@ -67,13 +62,25 @@ export async function runWireframeStage(
     const dataOut = await engine.runStep({
       stepId: PRD_STEP_IDS.wireframeData,
       sessionId,
-      inputs: slots,
+      inputs: session.slots,
       signal,
     });
     const dataPayload = requireJson(dataOut, PRD_SLOT_IDS.wireframeData);
     const dataKeyCount = Object.keys(
       dataPayload.data as Record<string, unknown>
     ).length;
+
+    // Persist the data slot.
+    const afterData = await storage.setSlot(
+      sessionId,
+      PRD_SLOT_IDS.wireframeData,
+      dataPayload
+    );
+    sse.send({
+      type: "slot",
+      slotId: PRD_SLOT_IDS.wireframeData,
+      payload: afterData.slots[PRD_SLOT_IDS.wireframeData] as SlotPayload,
+    });
     sse.send({
       type: "progress",
       op: "phase2.dummy_data",
@@ -81,11 +88,15 @@ export async function runWireframeStage(
       note: `Sample data ready (${dataKeyCount} entities)`,
     });
 
-    // Make the data available to the next step.
-    const slotsWithData = { ...slots, ...dataOut };
+    // Transition to running:wireframeHtml.
+    const runningHtmlState: SessionLifecycle = {
+      kind: "running",
+      stepId: PRD_STEP_IDS.wireframeHtml,
+    };
+    await storage.setState(sessionId, runningHtmlState);
+    sse.send({ type: "state", state: runningHtmlState });
 
-    // Step 2: wireframeHtml (compose). Emits substep/fanout-item events
-    // that we translate to legacy progress events.
+    // Step 2: wireframeHtml
     let screensTotal = 0;
     let screensCompleted = 0;
     sse.send({
@@ -97,7 +108,7 @@ export async function runWireframeStage(
     const htmlOut = await engine.runStep({
       stepId: PRD_STEP_IDS.wireframeHtml,
       sessionId,
-      inputs: slotsWithData,
+      inputs: { ...session.slots, ...dataOut },
       signal,
       onProgress: (event) => {
         if (event.kind === "substep") {
@@ -139,8 +150,6 @@ export async function runWireframeStage(
       },
     });
 
-    // Code-only smoke test runs inside the step's reduce function and
-    // throws if the artifact is broken.
     sse.send({
       type: "progress",
       op: "phase2.wireframe_smoke",
@@ -148,20 +157,24 @@ export async function runWireframeStage(
       note: "All screens linked and reachable",
     });
 
-    // Persist the produced fileset.
     const filesPayload = requireFileset(htmlOut, PRD_SLOT_IDS.wireframeFiles);
-    const updated = await storage.setWireframe(
+    const updated = await storage.setSlot(
       sessionId,
-      filesPayload.files
+      PRD_SLOT_IDS.wireframeFiles,
+      filesPayload
     );
     sse.send({
-      type: "wireframe_ready",
-      version: updated.wireframe!.version,
-      files: Object.keys(filesPayload.files),
+      type: "slot",
+      slotId: PRD_SLOT_IDS.wireframeFiles,
+      payload: requireFileset(updated.slots, PRD_SLOT_IDS.wireframeFiles),
     });
 
-    await storage.setPhase(sessionId, "phase2_wireframe_review");
-    sse.send({ type: "phase", phase: "phase2_wireframe_review" });
+    const reviewState: SessionLifecycle = {
+      kind: "review",
+      stepId: PRD_STEP_IDS.wireframeHtml,
+    };
+    await storage.setState(sessionId, reviewState);
+    sse.send({ type: "state", state: reviewState });
     sse.send({
       type: "progress",
       op: "phase2.wireframe",
@@ -169,8 +182,12 @@ export async function runWireframeStage(
       note: "Wireframe ready - click the Wireframe tab to view",
     });
   } catch (err: unknown) {
-    await storage.setPhase(sessionId, "phase2_screen_review");
-    sse.send({ type: "phase", phase: "phase2_screen_review" });
+    const errState: SessionLifecycle = {
+      kind: "review",
+      stepId: PRD_STEP_IDS.screen,
+    };
+    await storage.setState(sessionId, errState);
+    sse.send({ type: "state", state: errState });
     sse.send({
       type: "progress",
       op: "phase2.wireframe",
@@ -180,4 +197,3 @@ export async function runWireframeStage(
     throw err;
   }
 }
-

@@ -1,12 +1,13 @@
-import { PipelineEngine, sessionToSlots } from "@/lib/pipeline";
+import { PipelineEngine } from "@/lib/pipeline";
 import {
   PRD_PIPELINE,
   PRD_SLOT_IDS,
   PRD_STEP_IDS,
 } from "@/lib/pipeline/configs/prd-builder";
 import { requireMarkdown } from "@/lib/pipeline/slots";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
 import { type SSEWriter } from "@/lib/streaming";
-import { getStorage, type Phase, type Session } from "@/lib/storage";
+import { getStorage, type Session } from "@/lib/storage";
 
 /**
  * Phase 2 Stage 1a — Workflow Map.
@@ -15,11 +16,11 @@ import { getStorage, type Phase, type Session } from "@/lib/storage";
  * compose runner (discovery substep + workflow_detail fanout substep);
  * this wrapper translates StepProgressEvent into the legacy SSE op
  * vocabulary (`phase2.workflow_discovery`, `phase2.workflow_detail`,
- * `phase2.workflow_map`) so the UI doesn't change. Persists workflowMap
- * markdown via storage.setDocument and manages phase transitions.
+ * `phase2.workflow_map`) so the UI doesn't change. Persists the workflow
+ * slot via storage.setSlot and manages lifecycle state transitions.
  *
- * On success transitions to phase2_workflow_review. On failure rolls
- * back to errorRollbackPhase (phase1_complete by default).
+ * On success transitions to review:workflow. On failure rolls back to
+ * errorRollbackState (phase1_complete by default).
  */
 
 interface RunWorkflowStageInput {
@@ -27,7 +28,7 @@ interface RunWorkflowStageInput {
   sse: SSEWriter;
   signal?: AbortSignal;
   feedback?: string;
-  errorRollbackPhase?: Phase;
+  errorRollbackState?: SessionLifecycle;
 }
 
 const engine = new PipelineEngine(PRD_PIPELINE);
@@ -40,13 +41,17 @@ export async function runWorkflowStage(
     sse,
     signal,
     feedback,
-    errorRollbackPhase = "phase1_complete",
+    errorRollbackState = { kind: "phase1_complete" },
   } = input;
   const storage = getStorage();
   const sessionId = session.id;
 
-  await storage.setPhase(sessionId, "phase2_workflow_running");
-  sse.send({ type: "phase", phase: "phase2_workflow_running" });
+  const runningState: SessionLifecycle = {
+    kind: "running",
+    stepId: PRD_STEP_IDS.workflow,
+  };
+  await storage.setState(sessionId, runningState);
+  sse.send({ type: "state", state: runningState });
   sse.send({
     type: "progress",
     op: "phase2.workflow_stage",
@@ -55,8 +60,6 @@ export async function runWorkflowStage(
   });
 
   try {
-    const slots = sessionToSlots(session);
-
     // Track totals for the legacy "N/M workflows detailed" ticker.
     let detailTotal = 0;
     let detailCompleted = 0;
@@ -72,7 +75,7 @@ export async function runWorkflowStage(
     const out = await engine.runStep({
       stepId: PRD_STEP_IDS.workflow,
       sessionId,
-      inputs: slots,
+      inputs: session.slots,
       feedback,
       signal,
       onProgress: (event) => {
@@ -113,24 +116,19 @@ export async function runWorkflowStage(
               status: "started",
               note: `${detailCompleted}/${detailTotal} workflows detailed`,
             });
-            // Capture the post-discovery stub count (== detailTotal).
             stubsCount = detailTotal;
           }
         }
       },
     });
 
-    const workflowMap = requireMarkdown(out, PRD_SLOT_IDS.workflowMap).content;
-    const wmSession = await storage.setDocument(
-      sessionId,
-      "workflowMap",
-      workflowMap
-    );
+    const slotId = PRD_SLOT_IDS.workflowMap;
+    const payload = requireMarkdown(out, slotId);
+    const updated = await storage.setSlot(sessionId, slotId, payload);
     sse.send({
-      type: "document",
-      name: "workflowMap",
-      version: wmSession.documents.workflowMap!.version,
-      content: workflowMap,
+      type: "slot",
+      slotId,
+      payload: requireMarkdown(updated.slots, slotId),
     });
     sse.send({
       type: "progress",
@@ -139,8 +137,12 @@ export async function runWorkflowStage(
       note: "Workflow Map generated",
     });
 
-    await storage.setPhase(sessionId, "phase2_workflow_review");
-    sse.send({ type: "phase", phase: "phase2_workflow_review" });
+    const reviewState: SessionLifecycle = {
+      kind: "review",
+      stepId: PRD_STEP_IDS.workflow,
+    };
+    await storage.setState(sessionId, reviewState);
+    sse.send({ type: "state", state: reviewState });
     sse.send({
       type: "progress",
       op: "phase2.workflow_stage",
@@ -148,8 +150,8 @@ export async function runWorkflowStage(
       note: "Workflows ready - review then approve to generate screens",
     });
   } catch (err: unknown) {
-    await storage.setPhase(sessionId, errorRollbackPhase);
-    sse.send({ type: "phase", phase: errorRollbackPhase });
+    await storage.setState(sessionId, errorRollbackState);
+    sse.send({ type: "state", state: errorRollbackState });
     sse.send({
       type: "progress",
       op: "phase2.workflow_stage",

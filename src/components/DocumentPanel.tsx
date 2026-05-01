@@ -4,43 +4,52 @@ import { Markdown } from "./Markdown";
 import { PhaseIndicator } from "./PhaseIndicator";
 import { WireframeViewer } from "./WireframeViewer";
 import { approve, validatePhase1 } from "@/hooks/useSSE";
-import type { DocumentName } from "@/lib/streaming";
+import { PRD_PIPELINE, PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import type { DocSlot, StepConfig } from "@/lib/pipeline/types";
 import { useChatStore } from "@/stores/chat";
 import { useDocumentStore } from "@/stores/document";
 import { useSessionStore } from "@/stores/session";
 
-const TAB_LABELS: Record<DocumentName, string> = {
-  projectContract: "Project Contract",
-  workflowMap: "Workflow Map",
-  screenInventory: "Screen Inventory",
-  wireframe: "Wireframe",
-};
+const CONFIG = PRD_PIPELINE;
 
-const TAB_ORDER: DocumentName[] = [
-  "projectContract",
-  "workflowMap",
-  "screenInventory",
-  "wireframe",
-];
+/** Slots eligible to render as a tab. JSON slots are internal-only — they
+ *  feed the wireframe but don't have their own viewer. */
+const VISIBLE_SLOTS: readonly DocSlot[] = CONFIG.slots.filter(
+  (s) => s.kind !== "json"
+);
+
+const STEP_INDEX: ReadonlyMap<string, StepConfig> = new Map(
+  CONFIG.steps.map((s) => [String(s.id), s] as const)
+);
 
 export function DocumentPanel() {
-  const docs = useDocumentStore();
+  const slots = useDocumentStore((s) => s.slots);
+  const activeTab = useDocumentStore((s) => s.activeTab);
+  const setActiveTab = useDocumentStore((s) => s.setActiveTab);
   const current = useSessionStore((s) => s.current);
   const streaming = useChatStore((s) => s.streaming);
 
-  const hasContract = docs.projectContract.content.length > 0;
+  const state = current?.state;
+  const contractClient = slots[PRD_SLOT_IDS.projectContract];
+  const hasContract = Boolean(contractClient?.payload.kind === "markdown" &&
+    contractClient.payload.content.length > 0);
+
   const showDoneButton =
-    hasContract && current?.phase === "phase1" && docs.projectContract.finalized;
-  const showApproveWorkflow =
-    current?.phase === "phase2_workflow_review" &&
-    docs.workflowMap.content.length > 0;
-  const showApproveScreen =
-    current?.phase === "phase2_screen_review" &&
-    docs.screenInventory.content.length > 0;
-  const showApproveWireframe =
-    current?.phase === "phase2_wireframe_review" && docs.wireframe.ready;
+    hasContract && state?.kind === "phase1" && contractClient?.finalized;
+
+  const reviewStep =
+    state?.kind === "review" ? STEP_INDEX.get(String(state.stepId)) : undefined;
+  const reviewStepProduceSlot = reviewStep?.produces[0];
+  const reviewSlotPopulated = reviewStepProduceSlot
+    ? Boolean(slots[String(reviewStepProduceSlot)]?.finalized)
+    : false;
+  const showApprove =
+    state?.kind === "review" && reviewSlotPopulated && Boolean(reviewStep);
+  const approveLabel = reviewStep?.approveLabel ?? "Approve";
+
+  const wireframeReady = Boolean(slots[PRD_SLOT_IDS.wireframeFiles]?.finalized);
   const showExport =
-    current && (docs.wireframe.ready || current.phase === "complete");
+    current && (wireframeReady || state?.kind === "complete");
 
   async function handleDone() {
     if (!current) return;
@@ -67,9 +76,9 @@ export function DocumentPanel() {
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-neutral-800 px-4 py-3">
-        {current && (
+        {state && (
           <div className="mb-2">
-            <PhaseIndicator phase={current.phase} />
+            <PhaseIndicator state={state} />
           </div>
         )}
         <div className="flex items-center justify-between gap-3">
@@ -99,92 +108,109 @@ export function DocumentPanel() {
                 Done - Validate &amp; Complete Phase 1
               </button>
             )}
-            {showApproveWorkflow && (
+            {showApprove && (
               <button
                 onClick={() => void handleApprove()}
                 disabled={streaming}
                 className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
               >
-                Approve → Generate Screens
-              </button>
-            )}
-            {showApproveScreen && (
-              <button
-                onClick={() => void handleApprove()}
-                disabled={streaming}
-                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
-              >
-                Approve → Generate Wireframe
-              </button>
-            )}
-            {showApproveWireframe && (
-              <button
-                onClick={() => void handleApprove()}
-                disabled={streaming}
-                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
-              >
-                Approve → Mark Complete
+                {approveLabel}
               </button>
             )}
           </div>
         </div>
-        <DocumentTabs />
+        <DocumentTabs activeTab={activeTab} onSelect={setActiveTab} />
       </header>
-      <DocumentBody />
+      <DocumentBody activeTab={activeTab} />
     </div>
   );
 }
 
-function DocumentBody() {
-  const docs = useDocumentStore();
+function DocumentBody({ activeTab }: { activeTab: string | null }) {
+  const slots = useDocumentStore((s) => s.slots);
 
-  if (docs.activeTab === "wireframe") {
+  const slot = activeTab ? VISIBLE_SLOTS.find((s) => String(s.id) === activeTab) : undefined;
+  if (!slot) {
     return (
-      <div className="flex-1 overflow-hidden p-4">
-        <WireframeViewer />
+      <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div className="text-sm text-neutral-600">
+          {VISIBLE_SLOTS[0]?.emptyMessage ?? "Nothing to display yet."}
+        </div>
       </div>
     );
   }
 
-  const activeDoc = docs[docs.activeTab];
+  const client = slots[String(slot.id)];
+
+  if (slot.kind === "fileset") {
+    return (
+      <div className="flex-1 overflow-hidden p-4">
+        {client?.finalized ? (
+          <WireframeViewer />
+        ) : (
+          <div className="flex h-full items-center justify-center text-sm text-neutral-600">
+            {slot.emptyMessage ?? "Not generated yet."}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // markdown
+  const content =
+    client?.payload.kind === "markdown" ? client.payload.content : "";
   return (
     <div className="flex-1 overflow-y-auto px-6 py-5">
-      {activeDoc.content.length > 0 ? (
-        <Markdown>{activeDoc.content}</Markdown>
+      {content.length > 0 ? (
+        <Markdown>{content}</Markdown>
       ) : (
         <div className="text-sm text-neutral-600">
-          {emptyMessageFor(docs.activeTab)}
+          {slot.emptyMessage ?? "Not generated yet."}
         </div>
       )}
     </div>
   );
 }
 
-function DocumentTabs() {
-  const docs = useDocumentStore();
-  const visibleTabs = TAB_ORDER.filter((name) => {
-    if (name === "wireframe") return docs.wireframe.ready;
-    return docs[name].content.length > 0;
+function DocumentTabs({
+  activeTab,
+  onSelect,
+}: {
+  activeTab: string | null;
+  onSelect: (id: string | null) => void;
+}) {
+  const slots = useDocumentStore((s) => s.slots);
+  const visible = VISIBLE_SLOTS.filter((slot) => {
+    const client = slots[String(slot.id)];
+    if (!client) return false;
+    if (slot.kind === "fileset") return client.finalized;
+    if (slot.kind === "markdown") {
+      return (
+        client.payload.kind === "markdown" &&
+        client.payload.content.length > 0
+      );
+    }
+    return false;
   });
-  if (visibleTabs.length <= 1) return null;
+  if (visible.length <= 1) return null;
 
   return (
     <div className="mt-3 flex gap-1 border-b border-neutral-800 -mb-3">
-      {visibleTabs.map((name) => {
-        const isActive = docs.activeTab === name;
-        const version =
-          name === "wireframe" ? docs.wireframe.version : docs[name].version;
+      {visible.map((slot) => {
+        const id = String(slot.id);
+        const isActive = activeTab === id;
+        const version = slots[id]?.payload.version ?? 0;
         return (
           <button
-            key={name}
-            onClick={() => docs.setActiveTab(name)}
+            key={id}
+            onClick={() => onSelect(id)}
             className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition ${
               isActive
                 ? "border-blue-500 text-neutral-100"
                 : "border-transparent text-neutral-500 hover:text-neutral-300"
             }`}
           >
-            {TAB_LABELS[name]}
+            {slot.label}
             {version > 0 && (
               <span className="ml-2 text-[10px] uppercase tracking-wider text-neutral-600">
                 v{version}
@@ -195,17 +221,4 @@ function DocumentTabs() {
       })}
     </div>
   );
-}
-
-function emptyMessageFor(name: DocumentName): string {
-  switch (name) {
-    case "projectContract":
-      return "The Project Contract will appear here once you describe your idea in chat.";
-    case "workflowMap":
-      return "The Workflow Map will appear here after Phase 1 is validated.";
-    case "screenInventory":
-      return "The Screen Inventory will appear here after Phase 1 is validated.";
-    case "wireframe":
-      return "The Wireframe will appear here after the design is approved.";
-  }
 }

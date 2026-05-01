@@ -233,6 +233,7 @@ export const PRD_PIPELINE: PipelineConfig = {
       produces: [SLOT_WORKFLOW_MAP],
       gate: "review",
       reviewPlaceholder: "Ask about the workflows or request a change...",
+      approveLabel: "Approve → Generate Screens",
       runner: {
         kind: "compose",
         substeps: [
@@ -304,6 +305,7 @@ ${trimContractForDetail(contract)}
       produces: [SLOT_SCREEN_INVENTORY],
       gate: "review",
       reviewPlaceholder: "Ask about the screens or request a change...",
+      approveLabel: "Approve → Generate Wireframe",
       runner: {
         kind: "compose",
         substeps: [
@@ -457,6 +459,7 @@ ${screenInventory.trim()}
       gate: "review",
       reviewPlaceholder:
         "Ask about the wireframe, request a content tweak, or change a screen...",
+      approveLabel: "Approve → Mark Complete",
       runner: {
         kind: "compose",
         substeps: [

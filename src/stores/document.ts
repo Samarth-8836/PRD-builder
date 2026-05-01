@@ -1,79 +1,83 @@
 "use client";
 
 import { create } from "zustand";
-import type { DocumentName, MarkdownDocumentName } from "@/lib/streaming";
+import type { SlotPayload } from "@/lib/pipeline/types";
 
-interface DocumentState {
-  content: string;
-  version: number;
+export interface ClientSlotState {
+  payload: SlotPayload;
+  /** True once the canonical (non-streamed) payload has been seen.
+   *  Streaming-in-progress slots have `finalized: false`. */
   finalized: boolean;
 }
 
-interface WireframeState {
-  ready: boolean;
-  version: number;
-  files: string[];
-}
-
 interface DocumentStore {
-  projectContract: DocumentState;
-  workflowMap: DocumentState;
-  screenInventory: DocumentState;
-  wireframe: WireframeState;
-  activeTab: DocumentName;
+  /** Slot id -> client-side state. Storage shape and SSE wire shape are
+   *  both slot-keyed maps; this mirrors them. */
+  slots: Record<string, ClientSlotState>;
+  /** Currently visible tab. May be a slot id, or `null` if no slot is
+   *  visible yet (initial state). */
+  activeTab: string | null;
   reset: () => void;
-  appendDelta: (name: MarkdownDocumentName, text: string) => void;
-  setDocument: (name: MarkdownDocumentName, content: string, version: number) => void;
-  setWireframe: (version: number, files: string[]) => void;
-  clearWireframe: () => void;
-  setActiveTab: (name: DocumentName) => void;
+  /** Append streamed text to the markdown content of a slot. Creates the
+   *  slot if missing (treated as starting a fresh stream). */
+  appendDelta: (slotId: string, text: string) => void;
+  /** Set the canonical payload for a slot. Auto-switches the active tab to
+   *  this slot the first time it goes finalized. */
+  setSlot: (slotId: string, payload: SlotPayload) => void;
+  /** Drop a slot from the client view (cascade rewound past it). */
+  clearSlot: (slotId: string) => void;
+  setActiveTab: (slotId: string | null) => void;
 }
-
-const empty = (): DocumentState => ({ content: "", version: 0, finalized: false });
-const emptyWireframe = (): WireframeState => ({ ready: false, version: 0, files: [] });
 
 export const useDocumentStore = create<DocumentStore>((set) => ({
-  projectContract: empty(),
-  workflowMap: empty(),
-  screenInventory: empty(),
-  wireframe: emptyWireframe(),
-  activeTab: "projectContract",
-  reset: () =>
-    set({
-      projectContract: empty(),
-      workflowMap: empty(),
-      screenInventory: empty(),
-      wireframe: emptyWireframe(),
-      activeTab: "projectContract",
-    }),
-  appendDelta: (name, text) =>
-    set((state) => ({
-      [name]: { ...state[name], content: state[name].content + text },
-    })),
-  setDocument: (name, content, version) =>
+  slots: {},
+  activeTab: null,
+  reset: () => set({ slots: {}, activeTab: null }),
+  appendDelta: (slotId, text) =>
     set((state) => {
-      const next: Partial<DocumentStore> = {
-        [name]: { content, version, finalized: true },
+      const existing = state.slots[slotId];
+      const baseContent =
+        existing && existing.payload.kind === "markdown"
+          ? existing.payload.content
+          : "";
+      const baseVersion = existing?.payload.version ?? 0;
+      return {
+        slots: {
+          ...state.slots,
+          [slotId]: {
+            payload: {
+              kind: "markdown",
+              content: baseContent + text,
+              version: baseVersion,
+            },
+            finalized: false,
+          },
+        },
       };
-      // Auto-switch the visible tab the first time a document goes
-      // non-empty, so the user sees fresh content as the design stage
-      // produces it. Subsequent document events on the same doc don't
-      // change the active tab.
-      if (!state[name].finalized) next.activeTab = name;
-      return next;
     }),
-  setWireframe: (version, files) =>
-    set(() => ({
-      wireframe: { ready: true, version, files },
-      // Auto-switch to the wireframe tab when it first becomes ready.
-      activeTab: "wireframe",
-    })),
-  clearWireframe: () =>
-    set((state) => ({
-      wireframe: emptyWireframe(),
-      // If the user was viewing the wireframe tab, snap back to the
-      // contract tab so the panel doesn't sit on an empty viewer.
-      activeTab: state.activeTab === "wireframe" ? "projectContract" : state.activeTab,
-    })),
+  setSlot: (slotId, payload) =>
+    set((state) => {
+      const wasFinalized = state.slots[slotId]?.finalized ?? false;
+      const nextSlots = {
+        ...state.slots,
+        [slotId]: { payload, finalized: true },
+      };
+      // Auto-switch the visible tab the first time a slot goes finalized,
+      // so the user sees fresh content as it produces.
+      const nextActiveTab = !wasFinalized ? slotId : state.activeTab;
+      return { slots: nextSlots, activeTab: nextActiveTab };
+    }),
+  clearSlot: (slotId) =>
+    set((state) => {
+      const nextSlots = { ...state.slots };
+      delete nextSlots[slotId];
+      // If the cleared slot was the active tab, fall back to whichever
+      // populated slot remains (any kind), or null.
+      const nextActiveTab =
+        state.activeTab === slotId
+          ? (Object.keys(nextSlots)[0] ?? null)
+          : state.activeTab;
+      return { slots: nextSlots, activeTab: nextActiveTab };
+    }),
   setActiveTab: (activeTab) => set({ activeTab }),
 }));

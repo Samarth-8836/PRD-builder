@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
 import { getStorage } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -9,9 +10,9 @@ interface RouteParams {
 }
 
 /**
- * Serves files from a session's wireframe artifact. Used as the iframe
- * src target for the Wireframe tab. Files live in storage as a flat map
- * (filename -> UTF-8 content) and are looked up by name.
+ * Serves files from the session's wireframe fileset slot. Used as the
+ * iframe src target for the Wireframe tab. Files live in the slot as a
+ * flat map (filename -> UTF-8 content) and are looked up by name.
  *
  * The iframe runs with `sandbox="allow-scripts"` (no allow-same-origin),
  * so cross-origin restrictions don't matter for this responder — we just
@@ -35,12 +36,12 @@ export async function GET(_req: NextRequest, ctx: RouteParams) {
   if (!session) {
     return new Response("Session not found", { status: 404 });
   }
-  const wireframe = session.wireframe;
-  if (!wireframe) {
+  const slot = session.slots[PRD_SLOT_IDS.wireframeFiles];
+  if (!slot || slot.kind !== "fileset") {
     return new Response("Wireframe not generated yet", { status: 404 });
   }
 
-  const content = wireframe.files[filename];
+  const content = slot.files[filename];
   if (content === undefined) {
     return new Response(`File not found: ${filename}`, { status: 404 });
   }

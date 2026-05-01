@@ -1,16 +1,16 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import type { DocSlotId, SlotPayload } from "@/lib/pipeline/types";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
 import {
   type ChatMessage,
   type IStorage,
-  type Phase,
-  type Phase2Snapshot,
   type Session,
-  type SessionDocuments,
   type SessionSummary,
+  type SuspendedSnapshot,
 } from "./types";
 
-const SESSION_FILE_VERSION = 1;
+const SESSION_FILE_VERSION = 2;
 
 interface SessionFile {
   fileVersion: number;
@@ -22,6 +22,10 @@ interface SessionFile {
  * temp-file + rename. Reads/writes are not synchronized internally — the
  * Session Manager holds a per-session lock around any write path so the
  * concurrent-write window is closed at the layer above.
+ *
+ * M11: file-version bumped to 2 (slot-keyed shape). Pre-M11 files written
+ * under fileVersion 1 are not readable; the data/sessions/ tree is a dev
+ * artifact and was cleared at the M11 cut.
  */
 export class FileStorage implements IStorage {
   constructor(private readonly root: string) {}
@@ -34,8 +38,8 @@ export class FileStorage implements IStorage {
       title: seed.title,
       createdAt: now,
       updatedAt: now,
-      phase: "phase1",
-      documents: {},
+      state: { kind: "phase1" },
+      slots: {},
       chat: [],
     };
     await this.writeSession(session);
@@ -46,6 +50,11 @@ export class FileStorage implements IStorage {
     try {
       const raw = await fs.readFile(this.pathFor(id), "utf8");
       const parsed = JSON.parse(raw) as SessionFile;
+      if (parsed.fileVersion !== SESSION_FILE_VERSION) {
+        throw new Error(
+          `Session ${id} was written with file version ${parsed.fileVersion}, expected ${SESSION_FILE_VERSION}. M11 changed the storage shape — clear data/sessions/ to start fresh.`
+        );
+      }
       return parsed.session;
     } catch (err: unknown) {
       if (isMissing(err)) return null;
@@ -72,7 +81,7 @@ export class FileStorage implements IStorage {
         id: session.id,
         title: session.title,
         updatedAt: session.updatedAt,
-        phase: session.phase,
+        state: session.state,
       });
     }
     sessions.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
@@ -99,80 +108,50 @@ export class FileStorage implements IStorage {
     return session;
   }
 
-  async setDocument(
+  async setSlot(
     id: string,
-    name: keyof SessionDocuments,
-    content: string
+    slotId: DocSlotId | string,
+    payload: SlotPayload
   ): Promise<Session> {
     const session = await this.requireSession(id);
-    const existing = session.documents[name];
-    const next = {
-      version: existing ? existing.version + 1 : 1,
-      content,
-      updatedAt: new Date().toISOString(),
-    };
-    session.documents[name] = next;
-    session.updatedAt = next.updatedAt;
-    await this.writeSession(session);
-    return session;
-  }
-
-  async setPhase(id: string, phase: Phase): Promise<Session> {
-    const session = await this.requireSession(id);
-    session.phase = phase;
+    const key = String(slotId);
+    const existing = session.slots[key];
+    const nextVersion = existing ? existing.version + 1 : 1;
+    session.slots[key] = withVersion(payload, nextVersion);
     session.updatedAt = new Date().toISOString();
     await this.writeSession(session);
     return session;
   }
 
-  async setContractSnapshot(id: string, snapshot: string | null): Promise<Session> {
-    const session = await this.requireSession(id);
-    if (snapshot === null) delete session.contractSnapshot;
-    else session.contractSnapshot = snapshot;
-    session.updatedAt = new Date().toISOString();
-    await this.writeSession(session);
-    return session;
-  }
-
-  async setPhase2Snapshot(
+  async clearSlot(
     id: string,
-    snapshot: Phase2Snapshot | null
+    slotId: DocSlotId | string
   ): Promise<Session> {
     const session = await this.requireSession(id);
-    if (snapshot === null) delete session.phase2Snapshot;
-    else session.phase2Snapshot = snapshot;
+    delete session.slots[String(slotId)];
     session.updatedAt = new Date().toISOString();
     await this.writeSession(session);
     return session;
   }
 
-  async clearDocument(id: string, name: keyof SessionDocuments): Promise<Session> {
-    const session = await this.requireSession(id);
-    delete session.documents[name];
-    session.updatedAt = new Date().toISOString();
-    await this.writeSession(session);
-    return session;
-  }
-
-  async setWireframe(
+  async setState(
     id: string,
-    files: Record<string, string>
+    state: SessionLifecycle
   ): Promise<Session> {
     const session = await this.requireSession(id);
-    const prevVersion = session.wireframe?.version ?? 0;
-    session.wireframe = {
-      version: prevVersion + 1,
-      files,
-      updatedAt: new Date().toISOString(),
-    };
-    session.updatedAt = session.wireframe.updatedAt;
+    session.state = state;
+    session.updatedAt = new Date().toISOString();
     await this.writeSession(session);
     return session;
   }
 
-  async clearWireframe(id: string): Promise<Session> {
+  async setSuspendedSnapshot(
+    id: string,
+    snapshot: SuspendedSnapshot | null
+  ): Promise<Session> {
     const session = await this.requireSession(id);
-    delete session.wireframe;
+    if (snapshot === null) delete session.suspended;
+    else session.suspended = snapshot;
     session.updatedAt = new Date().toISOString();
     await this.writeSession(session);
     return session;
@@ -195,6 +174,17 @@ export class FileStorage implements IStorage {
     const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(payload, null, 2), "utf8");
     await fs.rename(tmp, target);
+  }
+}
+
+function withVersion(payload: SlotPayload, version: number): SlotPayload {
+  switch (payload.kind) {
+    case "markdown":
+      return { kind: "markdown", content: payload.content, version };
+    case "fileset":
+      return { kind: "fileset", files: payload.files, version };
+    case "json":
+      return { kind: "json", data: payload.data, version };
   }
 }
 

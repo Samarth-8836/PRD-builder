@@ -1,5 +1,7 @@
 import { buildContext } from "@/lib/context";
 import { parseFirstMessage } from "@/lib/parsers";
+import { PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { makeMarkdown, requireMarkdown } from "@/lib/pipeline/slots";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Session } from "@/lib/storage";
 import { execute } from "./executor";
@@ -25,7 +27,7 @@ export interface RunFirstMessageResult {
  *
  * Streams the contract body progressively to the document panel as it
  * arrives (after the CONTRACT marker is detected). The summary is sent at
- * the end as a single chat chunk, then a canonical `document` event with
+ * the end as a single chat chunk, then a canonical `slot` event with
  * the parsed content overrides any partial deltas (important if a retry
  * was needed mid-stream).
  */
@@ -34,6 +36,7 @@ export async function runFirstMessage(
 ): Promise<RunFirstMessageResult> {
   const { session, userInput, sse, signal } = input;
   const storage = getStorage();
+  const slotId = PRD_SLOT_IDS.projectContract;
 
   let contractStartIdx: number | null = null;
   let lastEmittedAttempt = 0;
@@ -57,7 +60,7 @@ export async function runFirstMessage(
     if (safeUpTo > emittedTo) {
       const text = ctx.accumulated.slice(emittedTo, safeUpTo);
       if (text) {
-        sse.send({ type: "document_delta", name: "projectContract", text });
+        sse.send({ type: "slot_delta", slotId, text });
       }
       emittedTo = safeUpTo;
     }
@@ -92,24 +95,20 @@ export async function runFirstMessage(
     onRetry,
   });
 
-  const updated = await storage.setDocument(
+  const updated = await storage.setSlot(
     session.id,
-    "projectContract",
-    value.contract.raw
+    slotId,
+    makeMarkdown(value.contract.raw)
   );
+  const payload = requireMarkdown(updated.slots, slotId);
 
   sse.send({ type: "assistant_message", content: value.summary });
-  sse.send({
-    type: "document",
-    name: "projectContract",
-    version: updated.documents.projectContract!.version,
-    content: value.contract.raw,
-  });
+  sse.send({ type: "slot", slotId, payload });
   sse.send({ type: "progress", op: "op-1-0", status: "completed" });
 
   return {
     summary: value.summary,
     contractContent: value.contract.raw,
-    version: updated.documents.projectContract!.version,
+    version: payload.version,
   };
 }

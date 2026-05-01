@@ -3,6 +3,8 @@ import {
   parseConversationResponse,
   type ParsedConversation,
 } from "@/lib/parsers";
+import { PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { getMarkdownContent, makeMarkdown, requireMarkdown } from "@/lib/pipeline/slots";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Session } from "@/lib/storage";
 import { execute } from "./executor";
@@ -49,14 +51,15 @@ export async function runConversation(
 ): Promise<RunConversationResult> {
   const { session, userMessage, sse, signal } = input;
   const storage = getStorage();
+  const slotId = PRD_SLOT_IDS.projectContract;
 
   let state: RouterState = "detecting_mode";
   let emittedTo = 0;
   let lastAttempt = 0;
   let streamingResetSent = false;
-  const oldContractContent = session.documents.projectContract?.content ?? "";
-  const oldContractVersion =
-    session.documents.projectContract?.version ?? 0;
+  const oldContractContent =
+    getMarkdownContent(session.slots, slotId) ?? "";
+  const oldContractVersion = session.slots[slotId]?.version ?? 0;
 
   function resetRouter() {
     state = "detecting_mode";
@@ -94,14 +97,17 @@ export async function runConversation(
         // Reset the artifact to empty so the streamed contract appears
         // as a clean progressive build instead of being appended onto
         // the previous version. Done once per attempt-1 entry into this
-        // state. The canonical document event after parse success
+        // state. The canonical slot event after parse success
         // overwrites this with the full new content.
         if (!streamingResetSent) {
           sse.send({
-            type: "document",
-            name: "projectContract",
-            version: oldContractVersion,
-            content: "",
+            type: "slot",
+            slotId,
+            payload: {
+              kind: "markdown",
+              content: "",
+              version: oldContractVersion,
+            },
           });
           streamingResetSent = true;
         }
@@ -112,7 +118,7 @@ export async function runConversation(
         const safeUpTo = Math.max(emittedTo, accumulated.length - STREAM_LOOKBACK);
         if (safeUpTo > emittedTo) {
           const text = accumulated.slice(emittedTo, safeUpTo);
-          sse.send({ type: "document_delta", name: "projectContract", text });
+          sse.send({ type: "slot_delta", slotId, text });
           emittedTo = safeUpTo;
         }
         return;
@@ -165,10 +171,13 @@ export async function runConversation(
     // so the doc panel doesn't show partial / corrupted text.
     if (streamingResetSent) {
       sse.send({
-        type: "document",
-        name: "projectContract",
-        version: oldContractVersion,
-        content: oldContractContent,
+        type: "slot",
+        slotId,
+        payload: {
+          kind: "markdown",
+          content: oldContractContent,
+          version: oldContractVersion,
+        },
       });
     }
     throw err;
@@ -183,21 +192,16 @@ export async function runConversation(
   }
 
   // EDIT mode — persist the new contract version and emit a canonical
-  // document event that overrides any partial deltas streamed. The summary
+  // slot event that overrides any partial deltas streamed. The summary
   // is the assistant's chat message for an edit.
-  const updated = await storage.setDocument(
+  const updated = await storage.setSlot(
     session.id,
-    "projectContract",
-    value.contract.raw
+    slotId,
+    makeMarkdown(value.contract.raw)
   );
-  const newVersion = updated.documents.projectContract!.version;
+  const payload = requireMarkdown(updated.slots, slotId);
 
-  sse.send({
-    type: "document",
-    name: "projectContract",
-    version: newVersion,
-    content: value.contract.raw,
-  });
+  sse.send({ type: "slot", slotId, payload });
   sse.send({ type: "assistant_message", content: value.summary });
   sse.send({ type: "progress", op: "op-1-1", status: "completed" });
 
@@ -205,6 +209,6 @@ export async function runConversation(
     mode: "edit",
     assistantMessage: value.summary,
     newContractContent: value.contract.raw,
-    newContractVersion: newVersion,
+    newContractVersion: payload.version,
   };
 }

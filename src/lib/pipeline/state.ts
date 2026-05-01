@@ -44,23 +44,6 @@ export function describe(state: SessionLifecycle): string {
   }
 }
 
-/** Returns the legacy phase-string equivalent, for storage and SSE during
- *  the M9-M10 transition where the legacy `Phase` union is still in place. */
-export function toLegacyPhase(state: SessionLifecycle): string {
-  switch (state.kind) {
-    case "phase1":
-      return "phase1";
-    case "phase1_complete":
-      return "phase1_complete";
-    case "running":
-      return `running:${state.stepId}`;
-    case "review":
-      return `review:${state.stepId}`;
-    case "complete":
-      return "complete";
-  }
-}
-
 /** Validates a transition against the pipeline config. Throws on invalid. */
 export function assertTransition(
   from: SessionLifecycle,

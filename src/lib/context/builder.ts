@@ -1,4 +1,6 @@
 import { type ChatMessage } from "@/lib/llm/provider";
+import { PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { getMarkdownContent } from "@/lib/pipeline/slots";
 import { getPrompt, type PromptSlug } from "@/lib/prompts";
 import type { Session } from "@/lib/storage";
 
@@ -51,12 +53,15 @@ export function buildContext(input: BuildContextInput): BuiltContext {
   messages.push({ role: "user", content: input.userMessage });
 
   let system = prompt.system;
-  const contract = input.session.documents.projectContract;
-  if (input.promptSlug === "phase1.conversation" && contract) {
+  const contractContent = getMarkdownContent(
+    input.session.slots,
+    PRD_SLOT_IDS.projectContract
+  );
+  if (input.promptSlug === "phase1.conversation" && contractContent) {
     system =
       system +
       "\n\n<current_contract>\n" +
-      contract.content.trim() +
+      contractContent.trim() +
       "\n</current_contract>";
   }
 

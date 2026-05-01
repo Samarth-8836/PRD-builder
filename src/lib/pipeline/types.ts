@@ -210,6 +210,9 @@ export interface StepConfig {
   /** Placeholder text shown in the chat panel when paused on this step's
    *  review gate. */
   reviewPlaceholder?: string;
+  /** Label for the Approve button at this step's review gate. UI-only.
+   *  Convention: "Approve → Generate <thing>" or "Approve → Mark Complete". */
+  approveLabel?: string;
 }
 
 // ---------------------------------------------------------------------------

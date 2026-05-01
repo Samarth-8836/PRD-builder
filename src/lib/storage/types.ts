@@ -1,13 +1,24 @@
-export type Phase =
-  | "phase1"
-  | "phase1_complete"
-  | "phase2_workflow_running"
-  | "phase2_workflow_review"
-  | "phase2_screen_running"
-  | "phase2_screen_review"
-  | "phase2_wireframe_running"
-  | "phase2_wireframe_review"
-  | "complete";
+/**
+ * Session storage shape — M11 cut.
+ *
+ * The 9-member `Phase` union and the named-document fields (`projectContract`,
+ * `workflowMap`, `screenInventory`, `wireframe`) are gone. Sessions now hold:
+ *
+ *   - `state: SessionLifecycle` — tagged union derived from the pipeline DAG,
+ *     not a hand-rolled list of phase strings.
+ *   - `slots: Record<DocSlotId, SlotPayload>` — opaque slot map keyed by ids
+ *     declared in `PipelineConfig.slots`.
+ *
+ * Storage interactions go through four generic methods (`setSlot`,
+ * `clearSlot`, `setState`, `setSuspendedSnapshot`) — there are no more
+ * document-specific or wireframe-specific writers.
+ *
+ * Pre-M11 session JSONs are not migrated. The `data/sessions` directory is a
+ * dev artifact and is cleared at the M11 cut.
+ */
+
+import type { SessionLifecycle } from "@/lib/pipeline/state";
+import type { DocSlotId, SlotPayload } from "@/lib/pipeline/types";
 
 export type ChatRole = "user" | "assistant" | "system";
 
@@ -17,69 +28,38 @@ export interface ChatMessage {
   ts: string;
 }
 
-export interface DocumentRecord {
-  version: number;
-  content: string;
-  updatedAt: string;
-}
-
-export interface SessionDocuments {
-  projectContract?: DocumentRecord;
-  workflowMap?: DocumentRecord;
-  screenInventory?: DocumentRecord;
-}
-
-/**
- * Stage 2 artifact: the clickable wireframe. Stored as a flat map of
- * filename -> file content (UTF-8 text). The viewer fetches files by name
- * via /api/wireframe/[sessionId]/[filename]. Filenames include
- * `index.html`, `data.js`, and `<screen-id>.html` for each screen.
- */
-export interface WireframeArtifact {
-  version: number;
-  files: Record<string, string>;
-  updatedAt: string;
-}
-
 export interface Session {
   id: string;
   title: string;
   createdAt: string;
   updatedAt: string;
-  phase: Phase;
-  documents: SessionDocuments;
+  /** Lifecycle state. Replaces the legacy `phase` string union. */
+  state: SessionLifecycle;
+  /** Opaque slot-keyed payload map. Slot ids are declared by the active
+   *  pipeline config (`PipelineConfig.slots`). */
+  slots: Record<string, SlotPayload>;
   chat: ChatMessage[];
-  /** Legacy field, retained for storage compatibility. As of M10 the
-   *  rollback equivalence check uses `phase2Snapshot.contractAtRollback`
-   *  instead of this field — every validate-PASS used to overwrite this
-   *  with the current contract, which broke the "did the contract change
-   *  during rollback?" test. M11 removes this field as part of the slot
-   *  storage cut. */
-  contractSnapshot?: string;
-  /** Saved on rollback from Phase 2 review back to Phase 1. Holds the
-   *  Phase 2 documents at the moment of rollback so they can be restored
-   *  if the user re-PASSes with an unchanged contract. */
-  phase2Snapshot?: Phase2Snapshot;
-  /** Stage 2 (Wireframe) artifact. Set by the wireframe stage runner and
-   *  read by the file-serving API. */
-  wireframe?: WireframeArtifact;
+  /** Snapshot saved when the user rolls back from a Phase 2 review back to
+   *  Phase 1. Restored if the user re-validates with an unchanged contract. */
+  suspended?: SuspendedSnapshot;
 }
 
-export interface Phase2Snapshot {
-  workflowMap?: DocumentRecord;
-  screenInventory?: DocumentRecord;
-  wireframe?: WireframeArtifact;
-  /** Phase the user was in at the moment of rollback (one of
-   *  phase2_workflow_review, phase2_screen_review, or
-   *  phase2_wireframe_review). The restore returns the session to this
-   *  phase if the contract is unchanged. */
-  phase: Phase;
-  /** Contract content at the moment of rollback. Used by the equivalence
-   *  check to decide whether to restore the snapshotted Phase 2 work
-   *  (contract identical) or regenerate from scratch (contract edited).
-   *  Frozen here so subsequent validate-PASS calls can't clobber it
-   *  via `setContractSnapshot`. */
-  contractAtRollback: string;
+/**
+ * Frozen Phase 2 work captured on rollback. `slots` carries every non-anchor
+ * slot at the time of rollback (the contract is excluded — the user is
+ * about to edit it). `anchorAtRollback` carries the contract content so the
+ * equivalence check can decide whether to restore or regenerate after the
+ * user re-validates.
+ */
+export interface SuspendedSnapshot {
+  /** Slot id -> payload at rollback. Excludes the drift-anchor slot. */
+  slots: Record<string, SlotPayload>;
+  /** Lifecycle state at the moment of rollback (a `review` state by
+   *  construction — rollback is only allowed from review/complete). */
+  state: SessionLifecycle;
+  /** Drift-anchor slot's content at rollback time. Used by the equivalence
+   *  check to decide whether to restore vs. regenerate. */
+  anchorAtRollback: string;
   takenAt: string;
 }
 
@@ -87,7 +67,7 @@ export interface SessionSummary {
   id: string;
   title: string;
   updatedAt: string;
-  phase: Phase;
+  state: SessionLifecycle;
 }
 
 export interface IStorage {
@@ -97,19 +77,17 @@ export interface IStorage {
   saveSession(session: Session): Promise<void>;
   appendChat(id: string, message: ChatMessage): Promise<Session>;
   setTitle(id: string, title: string): Promise<Session>;
-  setDocument(
+  /** Write a slot payload. The caller passes the payload as-is; storage
+   *  bumps the version. Pass null via `clearSlot` to drop a slot. */
+  setSlot(
     id: string,
-    name: keyof SessionDocuments,
-    content: string
+    slotId: DocSlotId | string,
+    payload: SlotPayload
   ): Promise<Session>;
-  setPhase(id: string, phase: Phase): Promise<Session>;
-  setContractSnapshot(id: string, snapshot: string | null): Promise<Session>;
-  setPhase2Snapshot(id: string, snapshot: Phase2Snapshot | null): Promise<Session>;
-  /** Removes a document by name. Used during rollback to clear stale
-   *  Phase 2 docs after they've been moved into phase2Snapshot. */
-  clearDocument(id: string, name: keyof SessionDocuments): Promise<Session>;
-  /** Replaces the wireframe artifact entirely. Bumps version. Pass null
-   *  via clearWireframe to drop. */
-  setWireframe(id: string, files: Record<string, string>): Promise<Session>;
-  clearWireframe(id: string): Promise<Session>;
+  clearSlot(id: string, slotId: DocSlotId | string): Promise<Session>;
+  setState(id: string, state: SessionLifecycle): Promise<Session>;
+  setSuspendedSnapshot(
+    id: string,
+    snapshot: SuspendedSnapshot | null
+  ): Promise<Session>;
 }

@@ -1,38 +1,40 @@
-import type { Phase } from "@/lib/storage";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
+import type { SlotPayload } from "@/lib/pipeline/types";
 
-/** Markdown-bodied documents that flow through document/document_delta events. */
-export type MarkdownDocumentName =
-  | "projectContract"
-  | "workflowMap"
-  | "screenInventory";
-
-/** All document tabs in the UI. Wireframe has no markdown body — it has
- *  its own ready event and is rendered as an iframe instead. */
-export type DocumentName = MarkdownDocumentName | "wireframe";
-
+/**
+ * SSE wire protocol — slot-keyed (M11). The legacy `document`/
+ * `document_delta`/`wireframe_ready`/`wireframe_cleared`/`phase` events
+ * are gone. Three slot events handle every artifact type, and a single
+ * `state` event carries the SessionLifecycle.
+ */
 export type StreamEvent =
-  | { type: "meta"; sessionId: string; title: string; phase: Phase }
+  | {
+      type: "meta";
+      sessionId: string;
+      title: string;
+      state: SessionLifecycle;
+    }
   /** Streamed token of the in-progress assistant chat message. Additive. */
   | { type: "chunk"; text: string }
   /** Canonical assistant chat message — replaces whatever chunks were
    *  streamed (used to recover from a corrective-retry that produced
    *  different output than was streamed on attempt 1). */
   | { type: "assistant_message"; content: string }
-  | { type: "document_delta"; name: MarkdownDocumentName; text: string }
+  /** Incremental token of a streaming markdown slot (e.g. the contract).
+   *  Only emitted for slots whose runner sets `stream: true`. */
+  | { type: "slot_delta"; slotId: string; text: string }
+  /** Canonical slot payload — overwrites any partial deltas streamed. */
+  | { type: "slot"; slotId: string; payload: SlotPayload }
+  /** Slot was discarded (e.g. cascade rewound past it). */
+  | { type: "slot_cleared"; slotId: string }
+  /** Lifecycle state changed (replaces the old `phase` event). */
+  | { type: "state"; state: SessionLifecycle }
   | {
-      type: "document";
-      name: MarkdownDocumentName;
-      version: number;
-      content: string;
+      type: "progress";
+      op: string;
+      status: "started" | "completed" | "failed";
+      note?: string;
     }
-  /** Wireframe finished generating. The viewer should reload the iframe
-   *  to pick up the new version. */
-  | { type: "wireframe_ready"; version: number; files: string[] }
-  /** Wireframe was discarded (e.g. workflow_change cascade rewound to
-   *  Design). The viewer should drop the iframe and switch to a doc tab. */
-  | { type: "wireframe_cleared" }
-  | { type: "phase"; phase: Phase }
-  | { type: "progress"; op: string; status: "started" | "completed" | "failed"; note?: string }
   | {
       type: "validation_result";
       status: "PASS" | "FAIL";

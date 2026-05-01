@@ -1,12 +1,13 @@
 "use client";
 
 import { create } from "zustand";
-import type { Phase, SessionSummary } from "@/lib/storage";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
+import type { SessionSummary } from "@/lib/storage";
 
 interface CurrentSession {
   id: string;
   title: string;
-  phase: Phase;
+  state: SessionLifecycle;
 }
 
 export interface DriftState {

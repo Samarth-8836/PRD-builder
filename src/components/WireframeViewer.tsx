@@ -1,5 +1,6 @@
 "use client";
 
+import { PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
 import { useDocumentStore } from "@/stores/document";
 import { useSessionStore } from "@/stores/session";
 
@@ -9,14 +10,19 @@ import { useSessionStore } from "@/stores/session";
  * intentionally `allow-scripts` only — no `allow-same-origin` — so
  * scripts inside the iframe can't reach back into the parent's origin.
  *
- * The iframe is keyed on sessionId + wireframe.version, so a new
- * generation forces a fresh iframe (avoiding any cached state).
+ * The iframe is keyed on sessionId + slot version, so a new generation
+ * forces a fresh iframe (avoiding any cached state).
  */
 export function WireframeViewer() {
   const sessionId = useSessionStore((s) => s.current?.id);
-  const wireframe = useDocumentStore((s) => s.wireframe);
+  const slot = useDocumentStore(
+    (s) => s.slots[PRD_SLOT_IDS.wireframeFiles]
+  );
 
-  if (!sessionId || !wireframe.ready) {
+  const ready =
+    Boolean(slot?.finalized) && slot?.payload.kind === "fileset";
+
+  if (!sessionId || !ready) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-neutral-600">
         The wireframe will appear here once Stage 2 finishes generating it.
@@ -24,13 +30,14 @@ export function WireframeViewer() {
     );
   }
 
-  const src = `/api/wireframe/${sessionId}/index.html?v=${wireframe.version}`;
-  const iframeKey = `${sessionId}:${wireframe.version}`;
+  const version = slot!.payload.version;
+  const src = `/api/wireframe/${sessionId}/index.html?v=${version}`;
+  const iframeKey = `${sessionId}:${version}`;
 
   return (
     <div className="flex h-full flex-col gap-2">
       <div className="flex items-center justify-between text-[11px] uppercase tracking-wider text-neutral-500">
-        <span>Wireframe v{wireframe.version}</span>
+        <span>Wireframe v{version}</span>
         <a
           href={src}
           target="_blank"

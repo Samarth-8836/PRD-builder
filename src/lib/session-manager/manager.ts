@@ -8,13 +8,16 @@ import {
   runTitle,
   runValidate,
 } from "@/lib/operations";
+import { PRD_SLOT_IDS, PRD_STEP_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { getMarkdownContent } from "@/lib/pipeline/slots";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
 import { type SSEWriter } from "@/lib/streaming";
 import {
   getStorage,
   type IStorage,
-  type Phase2Snapshot,
   type Session,
   type SessionSummary,
+  type SuspendedSnapshot,
 } from "@/lib/storage";
 import { runPhase2Cascade } from "./phase2-cascade";
 import { runScreenStage } from "./screen-stage";
@@ -74,14 +77,13 @@ interface ApproveInput {
 }
 
 /**
- * Top-level coordinator. Routes by phase:
+ * Top-level coordinator. Routes by lifecycle state:
  *
- *   - phase1 / phase1_complete:   Phase 1 conversation (questions + edits)
- *   - phase2_workflow_review |
- *     phase2_screen_review |
- *     phase2_wireframe_review:    Phase 2 review chat (questions, COMPATIBLE
- *                                 cascades, drift detection)
- *   - phase2_*_running:           rejected — stage is mid-flight
+ *   - phase1 / phase1_complete:        Phase 1 conversation (questions + edits)
+ *   - review:<stepId>:                 Phase 2 review chat (questions, COMPATIBLE
+ *                                      cascades, drift detection)
+ *   - running:<stepId>:                rejected — stage is mid-flight
+ *   - complete:                        rejected (M12 unblocks for iteration)
  *
  * Plus startSession (Phase 1 first-message), completePhase1 (validate +
  * auto-advance to workflow stage), approve (advance through Phase 2
@@ -116,7 +118,7 @@ export class SessionManager {
       type: "meta",
       sessionId: session.id,
       title: session.title,
-      phase: session.phase,
+      state: session.state,
     });
 
     this.busy.add(id);
@@ -129,7 +131,7 @@ export class SessionManager {
             type: "meta",
             sessionId: id,
             title: updated.title,
-            phase: updated.phase,
+            state: updated.state,
           });
         })
         .catch((err: unknown) => {
@@ -157,7 +159,7 @@ export class SessionManager {
   }
 
   // ---------------------------------------------------------------------
-  // Phase-aware chat router
+  // State-aware chat router
   // ---------------------------------------------------------------------
   async handleMessage(input: HandleMessageInput): Promise<void> {
     const { sessionId, message, sse, signal } = input;
@@ -178,7 +180,7 @@ export class SessionManager {
         sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
         return;
       }
-      if (!session.documents.projectContract) {
+      if (!session.slots[PRD_SLOT_IDS.projectContract]) {
         throw new NoContractError(sessionId);
       }
 
@@ -193,22 +195,19 @@ export class SessionManager {
         type: "meta",
         sessionId: refreshed.id,
         title: refreshed.title,
-        phase: refreshed.phase,
+        state: refreshed.state,
       });
 
-      switch (refreshed.phase) {
+      const state = refreshed.state;
+      switch (state.kind) {
         case "phase1":
         case "phase1_complete":
           await this.handlePhase1Chat(refreshed, trimmed, sse, signal);
           return;
-        case "phase2_workflow_review":
-        case "phase2_screen_review":
-        case "phase2_wireframe_review":
+        case "review":
           await this.handlePhase2ReviewChat(refreshed, trimmed, sse, signal);
           return;
-        case "phase2_workflow_running":
-        case "phase2_screen_running":
-        case "phase2_wireframe_running":
+        case "running":
           throw new SessionBusyError(sessionId);
         case "complete":
           throw new WrongPhaseError(
@@ -241,22 +240,18 @@ export class SessionManager {
 
     // If the contract was edited while the session sat in phase1_complete,
     // the prior validation no longer holds. Reset to phase1.
-    if (result.mode === "edit" && session.phase === "phase1_complete") {
-      const reset = await this.storage.setPhase(session.id, "phase1");
-      await this.storage.setContractSnapshot(session.id, null);
-      sse.send({ type: "phase", phase: reset.phase });
+    if (result.mode === "edit" && session.state.kind === "phase1_complete") {
+      const reset: SessionLifecycle = { kind: "phase1" };
+      await this.storage.setState(session.id, reset);
+      sse.send({ type: "state", state: reset });
     }
   }
 
   /**
-   * Handles a chat message during a review-style state. Today this is
-   * called from any phase2_*_review state. M12 wires iteration-on-
-   * complete so this same handler runs from `complete` too — the
-   * structure (classify → drift-check → dispatch by first-impact step)
-   * is identical; only the rollback/finalization semantics differ.
-   * Drift check + cascade dispatch are generalized: they only depend on
-   * the current contract content and the first-impact step id, not on
-   * the specific phase.
+   * Handles a chat message during a review-style state. Drift check +
+   * cascade dispatch are generalized: they only depend on the current
+   * contract content and the first-impact step id, not on the specific
+   * step the user is reviewing.
    */
   private async handlePhase2ReviewChat(
     session: Session,
@@ -280,7 +275,6 @@ export class SessionManager {
       return;
     }
 
-    // change mode — emit summary, run drift check, then either cascade or block.
     sse.send({ type: "assistant_message", content: conv.summary });
     await this.storage.appendChat(session.id, {
       role: "assistant",
@@ -288,8 +282,12 @@ export class SessionManager {
       ts: new Date().toISOString(),
     });
 
+    const contract = getMarkdownContent(
+      session.slots,
+      PRD_SLOT_IDS.projectContract
+    ) ?? "";
     const drift = await runDriftCheck({
-      contract: session.documents.projectContract!.content,
+      contract,
       changeDescription: conv.description,
       signal,
     });
@@ -302,20 +300,9 @@ export class SessionManager {
       scope: conv.firstImpactStepId,
     });
 
-    if (drift.classification === "DRIFT") {
-      // Block. The frontend renders a red banner and locks the chat
-      // until rollback. No doc changes here.
-      return;
-    }
+    if (drift.classification === "DRIFT") return;
+    if (drift.classification === "FLAG") return;
 
-    if (drift.classification === "FLAG") {
-      // Borderline. Surface but do not cascade. The frontend renders a
-      // yellow banner; the user can choose to roll back to Phase 1 or
-      // re-send the request with a clearer scope.
-      return;
-    }
-
-    // COMPATIBLE — dispatch the cascade by first-impact step.
     await runPhase2Cascade({
       session,
       sse,
@@ -323,7 +310,7 @@ export class SessionManager {
       firstImpactStepId: conv.firstImpactStepId,
       firstImpactItemId: conv.firstImpactItemId,
       description: conv.description,
-      phase: session.phase,
+      state: session.state,
     });
   }
 
@@ -344,7 +331,7 @@ export class SessionManager {
         sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
         return;
       }
-      if (!session.documents.projectContract) {
+      if (!session.slots[PRD_SLOT_IDS.projectContract]) {
         throw new NoContractError(sessionId);
       }
 
@@ -352,7 +339,7 @@ export class SessionManager {
         type: "meta",
         sessionId: session.id,
         title: session.title,
-        phase: session.phase,
+        state: session.state,
       });
 
       let validateResult;
@@ -370,16 +357,15 @@ export class SessionManager {
 
       // Restore-from-snapshot: if the user previously rolled back from
       // Phase 2 review and the post-rollback contract is byte-identical
-      // to the pre-rollback contract, the saved Phase 2 work is still
-      // valid. Restore it instead of regenerating.
-      const snapshot = refreshed.phase2Snapshot;
+      // to the contract-at-rollback content, the saved Phase 2 work is
+      // still valid. Restore it instead of regenerating.
+      const snapshot = refreshed.suspended;
       if (snapshot && contractsMatch(refreshed, snapshot)) {
         await this.restorePhase2(refreshed, snapshot, sse);
         return;
       }
-      // Different contract -> clear any stale snapshot before regen.
       if (snapshot) {
-        await this.storage.setPhase2Snapshot(sessionId, null);
+        await this.storage.setSuspendedSnapshot(sessionId, null);
       }
       await runWorkflowStage({ session: refreshed, sse, signal });
     } finally {
@@ -389,57 +375,32 @@ export class SessionManager {
 
   private async restorePhase2(
     session: Session,
-    snapshot: Phase2Snapshot,
+    snapshot: SuspendedSnapshot,
     sse: SSEWriter
   ): Promise<void> {
-    if (snapshot.workflowMap) {
-      const updated = await this.storage.setDocument(
-        session.id,
-        "workflowMap",
-        snapshot.workflowMap.content
-      );
+    // Restore every snapshotted slot. The drift-anchor slot (contract) is
+    // not in the snapshot — it stays as whatever the user re-validated.
+    let updated: Session = session;
+    for (const [slotId, payload] of Object.entries(snapshot.slots)) {
+      updated = await this.storage.setSlot(session.id, slotId, payload);
       sse.send({
-        type: "document",
-        name: "workflowMap",
-        version: updated.documents.workflowMap!.version,
-        content: snapshot.workflowMap.content,
+        type: "slot",
+        slotId,
+        payload: updated.slots[slotId]!,
       });
     }
-    if (snapshot.screenInventory) {
-      const updated = await this.storage.setDocument(
-        session.id,
-        "screenInventory",
-        snapshot.screenInventory.content
-      );
-      sse.send({
-        type: "document",
-        name: "screenInventory",
-        version: updated.documents.screenInventory!.version,
-        content: snapshot.screenInventory.content,
-      });
-    }
-    if (snapshot.wireframe) {
-      const updated = await this.storage.setWireframe(
-        session.id,
-        snapshot.wireframe.files
-      );
-      sse.send({
-        type: "wireframe_ready",
-        version: updated.wireframe!.version,
-        files: Object.keys(snapshot.wireframe.files),
-      });
-    }
-    await this.storage.setPhase2Snapshot(session.id, null);
-    // Always land at workflow_review (the first review state) regardless
-    // of which review state the snapshot was taken from. The user walks
-    // through one gate at a time; approve() skips stages whose outputs
-    // are already populated, so it's still cheap (no LLM calls) when the
-    // user just wants to traverse to a downstream review state.
-    const final = await this.storage.setPhase(
-      session.id,
-      "phase2_workflow_review"
-    );
-    sse.send({ type: "phase", phase: final.phase });
+    await this.storage.setSuspendedSnapshot(session.id, null);
+
+    // Always land at the workflow review (the first review state)
+    // regardless of which review state the snapshot was taken from. The
+    // user walks through one gate at a time; approve() skips stages whose
+    // outputs are already populated, so it's still cheap (no LLM calls).
+    const finalState: SessionLifecycle = {
+      kind: "review",
+      stepId: PRD_STEP_IDS.workflow,
+    };
+    await this.storage.setState(session.id, finalState);
+    sse.send({ type: "state", state: finalState });
     sse.send({
       type: "progress",
       op: "phase2.restore",
@@ -452,7 +413,7 @@ export class SessionManager {
   }
 
   // ---------------------------------------------------------------------
-  // Phase 2 approve — dispatches by current phase
+  // Phase 2 approve — dispatches by current review step
   // ---------------------------------------------------------------------
   async approve(input: ApproveInput): Promise<void> {
     const { sessionId, sse, signal } = input;
@@ -470,13 +431,20 @@ export class SessionManager {
         type: "meta",
         sessionId: session.id,
         title: session.title,
-        phase: session.phase,
+        state: session.state,
       });
 
-      if (session.phase === "phase2_workflow_review") {
+      const state = session.state;
+      if (state.kind !== "review") {
+        throw new WrongPhaseError(
+          `Cannot approve from ${state.kind}; approval is only available from a review state`
+        );
+      }
+
+      if (state.stepId === PRD_STEP_IDS.workflow) {
         if (
-          !session.documents.workflowMap ||
-          !session.documents.projectContract
+          !session.slots[PRD_SLOT_IDS.workflowMap] ||
+          !session.slots[PRD_SLOT_IDS.projectContract]
         ) {
           throw new WrongPhaseError(
             "Cannot approve — Workflow Map is missing"
@@ -485,12 +453,13 @@ export class SessionManager {
         // Skip the LLM call when the next stage's output is already
         // populated (typically post-restore). The user can still trigger
         // regeneration by making a change at this review state.
-        if (session.documents.screenInventory) {
-          const updated = await this.storage.setPhase(
-            sessionId,
-            "phase2_screen_review"
-          );
-          sse.send({ type: "phase", phase: updated.phase });
+        if (session.slots[PRD_SLOT_IDS.screenInventory]) {
+          const next: SessionLifecycle = {
+            kind: "review",
+            stepId: PRD_STEP_IDS.screen,
+          };
+          await this.storage.setState(sessionId, next);
+          sse.send({ type: "state", state: next });
           sse.send({
             type: "progress",
             op: "phase2.skip",
@@ -504,22 +473,23 @@ export class SessionManager {
         return;
       }
 
-      if (session.phase === "phase2_screen_review") {
+      if (state.stepId === PRD_STEP_IDS.screen) {
         if (
-          !session.documents.workflowMap ||
-          !session.documents.screenInventory ||
-          !session.documents.projectContract
+          !session.slots[PRD_SLOT_IDS.workflowMap] ||
+          !session.slots[PRD_SLOT_IDS.screenInventory] ||
+          !session.slots[PRD_SLOT_IDS.projectContract]
         ) {
           throw new WrongPhaseError(
             "Cannot approve — Phase 2 documents are missing"
           );
         }
-        if (session.wireframe) {
-          const updated = await this.storage.setPhase(
-            sessionId,
-            "phase2_wireframe_review"
-          );
-          sse.send({ type: "phase", phase: updated.phase });
+        if (session.slots[PRD_SLOT_IDS.wireframeFiles]) {
+          const next: SessionLifecycle = {
+            kind: "review",
+            stepId: PRD_STEP_IDS.wireframeHtml,
+          };
+          await this.storage.setState(sessionId, next);
+          sse.send({ type: "state", state: next });
           sse.send({
             type: "progress",
             op: "phase2.skip",
@@ -533,14 +503,15 @@ export class SessionManager {
         return;
       }
 
-      if (session.phase === "phase2_wireframe_review") {
-        if (!session.wireframe) {
+      if (state.stepId === PRD_STEP_IDS.wireframeHtml) {
+        if (!session.slots[PRD_SLOT_IDS.wireframeFiles]) {
           throw new WrongPhaseError(
             "Cannot approve — wireframe artifact is missing"
           );
         }
-        const updated = await this.storage.setPhase(sessionId, "complete");
-        sse.send({ type: "phase", phase: updated.phase });
+        const next: SessionLifecycle = { kind: "complete" };
+        await this.storage.setState(sessionId, next);
+        sse.send({ type: "state", state: next });
         sse.send({
           type: "progress",
           op: "phase2.complete",
@@ -552,7 +523,7 @@ export class SessionManager {
       }
 
       throw new WrongPhaseError(
-        `Cannot approve from ${session.phase}; approval is only available from one of the Phase 2 review states`
+        `Cannot approve from review:${state.stepId}; no action wired for this step`
       );
     } finally {
       this.busy.delete(sessionId);
@@ -574,47 +545,46 @@ export class SessionManager {
         sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
         return;
       }
-      if (
-        session.phase !== "phase2_workflow_review" &&
-        session.phase !== "phase2_screen_review" &&
-        session.phase !== "phase2_wireframe_review"
-      ) {
+      if (session.state.kind !== "review") {
         throw new WrongPhaseError(
-          `Cannot roll back from ${session.phase}; rollback is only available from Phase 2 review states`
+          `Cannot roll back from ${session.state.kind}; rollback is only available from a review state`
         );
       }
 
-      const snapshot: Phase2Snapshot = {
-        workflowMap: session.documents.workflowMap,
-        screenInventory: session.documents.screenInventory,
-        wireframe: session.wireframe,
-        phase: session.phase,
-        contractAtRollback:
-          session.documents.projectContract?.content ?? "",
+      // Snapshot every slot except the drift anchor (contract). The user
+      // is about to edit the contract; the rest of the artifacts are what
+      // we want to restore on a clean re-validate.
+      const anchor = PRD_SLOT_IDS.projectContract;
+      const snapshotSlots: Record<string, (typeof session.slots)[string]> = {};
+      for (const [slotId, payload] of Object.entries(session.slots)) {
+        if (slotId === anchor) continue;
+        snapshotSlots[slotId] = payload;
+      }
+      const snapshot: SuspendedSnapshot = {
+        slots: snapshotSlots,
+        state: session.state,
+        anchorAtRollback:
+          getMarkdownContent(session.slots, anchor) ?? "",
         takenAt: new Date().toISOString(),
       };
-      await this.storage.setPhase2Snapshot(sessionId, snapshot);
+      await this.storage.setSuspendedSnapshot(sessionId, snapshot);
 
-      // Clear the live Phase 2 docs so the doc panel doesn't show stale
+      // Clear the live Phase 2 slots so the doc panel doesn't show stale
       // content while the user edits the contract.
-      if (session.documents.workflowMap) {
-        await this.storage.clearDocument(sessionId, "workflowMap");
-      }
-      if (session.documents.screenInventory) {
-        await this.storage.clearDocument(sessionId, "screenInventory");
-      }
-      if (session.wireframe) {
-        await this.storage.clearWireframe(sessionId);
+      for (const slotId of Object.keys(snapshotSlots)) {
+        await this.storage.clearSlot(sessionId, slotId);
+        sse.send({ type: "slot_cleared", slotId });
       }
 
-      const updated = await this.storage.setPhase(sessionId, "phase1");
+      const next: SessionLifecycle = { kind: "phase1" };
+      const updated = await this.storage.setState(sessionId, next);
       sse.send({
         type: "meta",
         sessionId: updated.id,
         title: updated.title,
-        phase: updated.phase,
+        state: updated.state,
       });
-      sse.send({ type: "phase", phase: updated.phase });
+      sse.send({ type: "state", state: next });
       sse.send({
         type: "progress",
         op: "phase2.rollback",
@@ -639,23 +609,18 @@ export class SessionManager {
   }
 }
 
-function contractsMatch(session: Session, snapshot: Phase2Snapshot): boolean {
+function contractsMatch(session: Session, snapshot: SuspendedSnapshot): boolean {
   // Equivalence check: did the user end up with the same contract content
   // after the rollback? We compare the current contract to the
-  // contract-at-rollback content stored INSIDE the phase2Snapshot. The
-  // global session.contractSnapshot field can't be used here because
-  // every validate-PASS overwrites it with the current contract — so any
-  // edit followed by a re-validate would falsely look "unchanged".
-  // Trim ignores stray whitespace.
-  const baseline = snapshot.contractAtRollback?.trim();
-  const current = session.documents.projectContract?.content.trim();
+  // anchor-at-rollback content stored INSIDE the snapshot (validate-PASS
+  // never mutates a snapshot). Trim ignores stray whitespace.
+  const baseline = snapshot.anchorAtRollback?.trim();
+  const current = getMarkdownContent(
+    session.slots,
+    PRD_SLOT_IDS.projectContract
+  )?.trim();
   if (!baseline || !current) return false;
-  return (
-    baseline === current &&
-    (snapshot.phase === "phase2_workflow_review" ||
-      snapshot.phase === "phase2_screen_review" ||
-      snapshot.phase === "phase2_wireframe_review")
-  );
+  return baseline === current && snapshot.state.kind === "review";
 }
 
 let cached: SessionManager | null = null;

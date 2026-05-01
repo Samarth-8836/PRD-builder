@@ -1,6 +1,6 @@
 "use client";
 
-import type { MarkdownDocumentName, StreamEvent } from "@/lib/streaming";
+import type { StreamEvent } from "@/lib/streaming";
 import { useChatStore } from "@/stores/chat";
 import { useDocumentStore } from "@/stores/document";
 import { useSessionStore } from "@/stores/session";
@@ -105,13 +105,12 @@ export async function rollbackToPhase1(sessionId: string): Promise<void> {
       );
     }
     await consumeSSE(response.body, dispatch);
-    // After rollback, the doc panel should clear Phase 2 docs locally too.
+    // After rollback, the doc panel should clear non-anchor slots locally
+    // (the server already emitted slot_cleared events for each, but reset
+    // is cheaper than tracking in-flight). Then re-fetch the contract.
+    const sessId = useSessionStore.getState().current?.id;
     useDocumentStore.getState().reset();
-    if (useSessionStore.getState().current) {
-      // Re-fetch contract from storage to re-populate the panel.
-      const id = useSessionStore.getState().current!.id;
-      await loadSession(id);
-    }
+    if (sessId) await loadSession(sessId);
     useSessionStore.getState().setDrift(null);
   } finally {
     useChatStore.getState().setStreaming(false);
@@ -166,12 +165,12 @@ function dispatch(event: StreamEvent): void {
       session.setCurrent({
         id: event.sessionId,
         title: event.title,
-        phase: event.phase,
+        state: event.state,
       });
       session.upsert({
         id: event.sessionId,
         title: event.title,
-        phase: event.phase,
+        state: event.state,
         updatedAt: new Date().toISOString(),
       });
       return;
@@ -181,17 +180,14 @@ function dispatch(event: StreamEvent): void {
     case "assistant_message":
       chat.setPendingAssistant(event.content);
       return;
-    case "document_delta":
-      doc.appendDelta(event.name as MarkdownDocumentName, event.text);
+    case "slot_delta":
+      doc.appendDelta(event.slotId, event.text);
       return;
-    case "document":
-      doc.setDocument(event.name as MarkdownDocumentName, event.content, event.version);
+    case "slot":
+      doc.setSlot(event.slotId, event.payload);
       return;
-    case "wireframe_ready":
-      doc.setWireframe(event.version, event.files);
-      return;
-    case "wireframe_cleared":
-      doc.clearWireframe();
+    case "slot_cleared":
+      doc.clearSlot(event.slotId);
       return;
     case "progress":
       if (event.status === "completed" && event.note) {
@@ -200,13 +196,13 @@ function dispatch(event: StreamEvent): void {
         chat.appendSystem(`${event.op} failed: ${event.note}`);
       }
       return;
-    case "phase":
+    case "state":
       if (session.current) {
-        session.setCurrent({ ...session.current, phase: event.phase });
+        session.setCurrent({ ...session.current, state: event.state });
         session.upsert({
           id: session.current.id,
           title: session.current.title,
-          phase: event.phase,
+          state: event.state,
           updatedAt: new Date().toISOString(),
         });
       }
@@ -264,38 +260,19 @@ export async function loadSession(id: string): Promise<void> {
   useSessionStore.getState().setCurrent({
     id: s.id,
     title: s.title,
-    phase: s.phase,
+    state: s.state,
   });
   useSessionStore.getState().setDrift(null);
   useChatStore.getState().setMessages(s.chat);
 
   const doc = useDocumentStore.getState();
   doc.reset();
-  if (s.documents.projectContract) {
-    doc.setDocument(
-      "projectContract",
-      s.documents.projectContract.content,
-      s.documents.projectContract.version
-    );
+  for (const [slotId, payload] of Object.entries(s.slots)) {
+    doc.setSlot(slotId, payload);
   }
-  if (s.documents.workflowMap) {
-    doc.setDocument(
-      "workflowMap",
-      s.documents.workflowMap.content,
-      s.documents.workflowMap.version
-    );
-  }
-  if (s.documents.screenInventory) {
-    doc.setDocument(
-      "screenInventory",
-      s.documents.screenInventory.content,
-      s.documents.screenInventory.version
-    );
-  }
-  if (s.wireframe) {
-    doc.setWireframe(s.wireframe.version, Object.keys(s.wireframe.files));
-  }
-  // setWireframe auto-switches the tab; restore to contract for a
-  // predictable landing on session load.
-  doc.setActiveTab("projectContract");
+  // setSlot auto-switches the tab on first finalize. Restore to the
+  // first known slot id (drift anchor by convention) for a predictable
+  // landing on session load.
+  const anchor = Object.keys(s.slots)[0];
+  if (anchor) doc.setActiveTab(anchor);
 }

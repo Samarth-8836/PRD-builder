@@ -1,5 +1,8 @@
 import { getPrompt } from "@/lib/prompts";
 import { parseValidationResult, type ValidationResult } from "@/lib/parsers";
+import { PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { requireMarkdown } from "@/lib/pipeline/slots";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Session } from "@/lib/storage";
 import { execute } from "./executor";
@@ -14,7 +17,7 @@ export interface RunValidateResult {
   status: ValidationResult["status"];
   issues: string[];
   suggestions: string[];
-  newPhase: Session["phase"];
+  newState: SessionLifecycle;
 }
 
 export class NoContractToValidateError extends Error {
@@ -26,10 +29,8 @@ export class NoContractToValidateError extends Error {
 
 /**
  * op-1-2: validates the current Project Contract against a five-point
- * checklist. On PASS, transitions phase to phase1_complete and snapshots
- * the contract so a future rollback can detect "structurally identical"
- * resumes (M5+). On FAIL, leaves phase as-is and returns the issues +
- * suggestions for the user to act on.
+ * checklist. On PASS, transitions state to phase1_complete. On FAIL, leaves
+ * state as-is and returns the issues + suggestions for the user to act on.
  */
 export async function runValidate(
   input: RunValidateInput
@@ -37,8 +38,9 @@ export async function runValidate(
   const { session, sse, signal } = input;
   const storage = getStorage();
 
-  const contract = session.documents.projectContract;
-  if (!contract) throw new NoContractToValidateError(session.id);
+  const contractSlot = session.slots[PRD_SLOT_IDS.projectContract];
+  if (!contractSlot) throw new NoContractToValidateError(session.id);
+  const contract = requireMarkdown(session.slots, PRD_SLOT_IDS.projectContract);
 
   sse.send({
     type: "progress",
@@ -70,12 +72,11 @@ export async function runValidate(
     suggestions: value.suggestions,
   });
 
-  let newPhase = session.phase;
+  let newState: SessionLifecycle = session.state;
   if (value.status === "PASS") {
-    const updated = await storage.setPhase(session.id, "phase1_complete");
-    await storage.setContractSnapshot(session.id, contract.content);
-    newPhase = updated.phase;
-    sse.send({ type: "phase", phase: newPhase });
+    newState = { kind: "phase1_complete" };
+    await storage.setState(session.id, newState);
+    sse.send({ type: "state", state: newState });
   }
 
   sse.send({ type: "progress", op: "op-1-2", status: "completed" });
@@ -84,6 +85,6 @@ export async function runValidate(
     status: value.status,
     issues: value.issues,
     suggestions: value.suggestions,
-    newPhase,
+    newState,
   };
 }

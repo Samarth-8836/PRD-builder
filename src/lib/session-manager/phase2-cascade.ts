@@ -1,32 +1,32 @@
 /**
- * Phase 2 review cascade dispatcher (M10 — replaces the 3×3 matrix in
- * the deleted cascade.ts).
+ * Phase 2 review cascade dispatcher (M11 — slot-keyed).
  *
  * The review-chat classifier emits a `firstImpactStepId` (and optional
  * `firstImpactItemId` for fanout sub-targets). This module dispatches:
  *
- *   - workflow         → rewind: clear screen + wireframe, run workflow stage
- *   - screen           → rewind: clear wireframe, run screen stage
+ *   - workflow         → rewind: clear screen + wireframe slots, re-run workflow stage
+ *   - screen           → rewind: clear wireframe slots, re-run screen stage
  *   - wireframeData    → patch in place: regen sample data, swap data.js
  *                        inside the existing fileset, preserve HTML files
  *   - wireframeHtml    → with itemId: regen one fanout item, patch fileset;
- *                        without itemId: clear wireframe, run wireframe stage
+ *                        without itemId: clear wireframe slots, re-run wireframe stage
  *
  * The "system note" non-applicable cells (e.g. data_only at workflow_review
- * before wireframe exists) fall out automatically — when a patch target
- * doesn't exist yet, we emit a note instead of running anything.
+ * before the wireframe slot exists) fall out automatically — when a patch
+ * target doesn't exist yet, we emit a note instead of running anything.
  */
 
 import { formatDataJs } from "@/lib/operations";
-import { PipelineEngine, sessionToSlots } from "@/lib/pipeline";
+import { PipelineEngine } from "@/lib/pipeline";
 import {
   PRD_PIPELINE,
   PRD_SLOT_IDS,
   PRD_STEP_IDS,
 } from "@/lib/pipeline/configs/prd-builder";
 import { requireFileset, requireJson } from "@/lib/pipeline/slots";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
 import { type SSEWriter } from "@/lib/streaming";
-import { getStorage, type Phase, type Session } from "@/lib/storage";
+import { getStorage, type Session } from "@/lib/storage";
 import { runScreenStage } from "./screen-stage";
 import { runWireframeStage } from "./wireframe-stage";
 import { runWorkflowStage } from "./workflow-stage";
@@ -40,10 +40,10 @@ export interface RunPhase2CascadeInput {
   /** Optional fanout sub-target (e.g. one screen id within wireframeHtml). */
   firstImpactItemId?: string;
   description: string;
-  /** Phase the user was in when they sent the message (workflow_review |
-   *  screen_review | wireframe_review). The dispatcher uses this to pick
-   *  the right errorRollbackPhase for the underlying stage runner. */
-  phase: Phase;
+  /** Lifecycle state the user was in when they sent the message. The
+   *  dispatcher uses it to pick the right errorRollbackState for the
+   *  underlying stage runner. */
+  state: SessionLifecycle;
 }
 
 const engine = new PipelineEngine(PRD_PIPELINE);
@@ -62,7 +62,7 @@ function NOT_APPLICABLE_NOTE(prefix: string): string {
 export async function runPhase2Cascade(
   input: RunPhase2CascadeInput
 ): Promise<void> {
-  const { firstImpactStepId, phase } = input;
+  const { firstImpactStepId } = input;
 
   switch (firstImpactStepId) {
     case PRD_STEP_IDS.workflow:
@@ -78,36 +78,43 @@ export async function runPhase2Cascade(
         type: "progress",
         op: "phase2.cascade",
         status: "completed",
-        note: `Cascade not applicable: unknown first-impact step "${firstImpactStepId}" (phase ${phase})`,
+        note: `Cascade not applicable: unknown first-impact step "${firstImpactStepId}"`,
       });
   }
 }
 
+function isReviewOf(state: SessionLifecycle, stepId: string): boolean {
+  return state.kind === "review" && state.stepId === stepId;
+}
+
 // ---------------------------------------------------------------------------
-// workflow → rewind: clear all stale downstream, re-run workflow stage,
-// land at phase2_workflow_review.
+// workflow → rewind: clear all stale downstream, re-run workflow stage
 // ---------------------------------------------------------------------------
 
 async function runWorkflowImpact(input: RunPhase2CascadeInput): Promise<void> {
-  const { session, sse, signal, description, phase } = input;
+  const { session, sse, signal, description, state } = input;
   const storage = getStorage();
 
   sse.send({
     type: "progress",
     op: "phase2.cascade",
     status: "started",
-    note:
-      phase === "phase2_workflow_review"
-        ? "Updating workflows to reflect the change"
-        : "Rewinding to the Workflow stage; you'll re-approve downstream stages after",
+    note: isReviewOf(state, PRD_STEP_IDS.workflow)
+      ? "Updating workflows to reflect the change"
+      : "Rewinding to the Workflow stage; you'll re-approve downstream stages after",
   });
 
-  if (session.documents.screenInventory) {
-    await storage.clearDocument(session.id, "screenInventory");
+  if (session.slots[PRD_SLOT_IDS.screenInventory]) {
+    await storage.clearSlot(session.id, PRD_SLOT_IDS.screenInventory);
+    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.screenInventory });
   }
-  if (session.wireframe) {
-    await storage.clearWireframe(session.id);
-    sse.send({ type: "wireframe_cleared" });
+  if (session.slots[PRD_SLOT_IDS.wireframeFiles]) {
+    await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeFiles);
+    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeFiles });
+  }
+  if (session.slots[PRD_SLOT_IDS.wireframeData]) {
+    await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeData);
+    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeData });
   }
 
   await runWorkflowStage({
@@ -115,21 +122,19 @@ async function runWorkflowImpact(input: RunPhase2CascadeInput): Promise<void> {
     sse,
     signal,
     feedback: description,
-    errorRollbackPhase: phase,
+    errorRollbackState: state,
   });
 }
 
 // ---------------------------------------------------------------------------
-// screen → rewind: clear stale wireframe, re-run screen stage, land at
-// phase2_screen_review.
+// screen → rewind: clear stale wireframe, re-run screen stage
 // ---------------------------------------------------------------------------
 
 async function runScreenImpact(input: RunPhase2CascadeInput): Promise<void> {
-  const { session, sse, signal, description, phase } = input;
+  const { session, sse, signal, description, state } = input;
   const storage = getStorage();
 
-  if (phase === "phase2_workflow_review") {
-    // Screen list doesn't exist yet at workflow_review.
+  if (isReviewOf(state, PRD_STEP_IDS.workflow)) {
     sse.send({
       type: "progress",
       op: "phase2.cascade",
@@ -145,15 +150,18 @@ async function runScreenImpact(input: RunPhase2CascadeInput): Promise<void> {
     type: "progress",
     op: "phase2.cascade",
     status: "started",
-    note:
-      phase === "phase2_screen_review"
-        ? "Updating screens to reflect the change"
-        : "Rewinding to the Screen stage; you'll re-approve the wireframe after",
+    note: isReviewOf(state, PRD_STEP_IDS.screen)
+      ? "Updating screens to reflect the change"
+      : "Rewinding to the Screen stage; you'll re-approve the wireframe after",
   });
 
-  if (session.wireframe) {
-    await storage.clearWireframe(session.id);
-    sse.send({ type: "wireframe_cleared" });
+  if (session.slots[PRD_SLOT_IDS.wireframeFiles]) {
+    await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeFiles);
+    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeFiles });
+  }
+  if (session.slots[PRD_SLOT_IDS.wireframeData]) {
+    await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeData);
+    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeData });
   }
 
   await runScreenStage({
@@ -161,22 +169,23 @@ async function runScreenImpact(input: RunPhase2CascadeInput): Promise<void> {
     sse,
     signal,
     feedback: description,
-    errorRollbackPhase: phase,
+    errorRollbackState: state,
   });
 }
 
 // ---------------------------------------------------------------------------
 // wireframeData → patch in place: regen sample data, swap data.js inside
-// the existing fileset, preserve HTML files. Stay at wireframe_review.
+// the existing fileset, preserve HTML files. Stay at review:wireframeHtml.
 // ---------------------------------------------------------------------------
 
 async function runWireframeDataImpact(
   input: RunPhase2CascadeInput
 ): Promise<void> {
-  const { session, sse, signal, description, phase } = input;
+  const { session, sse, signal, description } = input;
   const storage = getStorage();
 
-  if (!session.wireframe) {
+  const existingFiles = session.slots[PRD_SLOT_IDS.wireframeFiles];
+  if (!existingFiles || existingFiles.kind !== "fileset") {
     sse.send({
       type: "progress",
       op: "phase2.cascade",
@@ -195,16 +204,27 @@ async function runWireframeDataImpact(
     note: "Regenerating sample data — screen HTML will be preserved",
   });
 
-  const slots = sessionToSlots(session);
   const dataOut = await engine.runStep({
     stepId: PRD_STEP_IDS.wireframeData,
     sessionId: session.id,
-    inputs: slots,
+    inputs: session.slots,
     feedback: description,
     signal,
   });
   const dataPayload = requireJson(dataOut, PRD_SLOT_IDS.wireframeData);
   const data = dataPayload.data as Record<string, unknown>;
+
+  // Persist the new data slot.
+  const afterData = await storage.setSlot(
+    session.id,
+    PRD_SLOT_IDS.wireframeData,
+    dataPayload
+  );
+  sse.send({
+    type: "slot",
+    slotId: PRD_SLOT_IDS.wireframeData,
+    payload: afterData.slots[PRD_SLOT_IDS.wireframeData]!,
+  });
   sse.send({
     type: "progress",
     op: "phase2.dummy_data",
@@ -212,15 +232,24 @@ async function runWireframeDataImpact(
     note: `Sample data refreshed (${Object.keys(data).length} entities)`,
   });
 
+  // Patch data.js inside the fileset.
   const nextFiles: Record<string, string> = {
-    ...session.wireframe.files,
+    ...existingFiles.files,
     "data.js": formatDataJs(data),
   };
-  const updated = await storage.setWireframe(session.id, nextFiles);
+  const updated = await storage.setSlot(
+    session.id,
+    PRD_SLOT_IDS.wireframeFiles,
+    {
+      kind: "fileset",
+      files: nextFiles,
+      version: 0,
+    }
+  );
   sse.send({
-    type: "wireframe_ready",
-    version: updated.wireframe!.version,
-    files: Object.keys(nextFiles),
+    type: "slot",
+    slotId: PRD_SLOT_IDS.wireframeFiles,
+    payload: requireFileset(updated.slots, PRD_SLOT_IDS.wireframeFiles),
   });
   sse.send({
     type: "progress",
@@ -228,23 +257,23 @@ async function runWireframeDataImpact(
     status: "completed",
     note: "Sample data updated — reload the wireframe to see the new content",
   });
-  void phase;
 }
 
 // ---------------------------------------------------------------------------
 // wireframeHtml →
 //   with itemId: regen one fanout item, patch the matching <id>.html in
-//   the existing fileset, stay at wireframe_review.
-//   without itemId: clear wireframe, re-run wireframe stage from scratch.
+//   the existing fileset.
+//   without itemId: clear wireframe slots, re-run wireframe stage from scratch.
 // ---------------------------------------------------------------------------
 
 async function runWireframeHtmlImpact(
   input: RunPhase2CascadeInput
 ): Promise<void> {
-  const { session, sse, signal, description, firstImpactItemId, phase } = input;
+  const { session, sse, signal, description, firstImpactItemId } = input;
   const storage = getStorage();
 
-  if (!session.wireframe) {
+  const existingFiles = session.slots[PRD_SLOT_IDS.wireframeFiles];
+  if (!existingFiles || existingFiles.kind !== "fileset") {
     sse.send({
       type: "progress",
       op: "phase2.cascade",
@@ -257,18 +286,20 @@ async function runWireframeHtmlImpact(
   }
 
   // Without an item id, regenerate every screen HTML by re-running the
-  // wireframe stage from scratch. Defer that to the stage runner so the
-  // SSE vocabulary matches the initial-build path.
+  // wireframe stage from scratch.
   if (!firstImpactItemId) {
-    await storage.clearWireframe(session.id);
-    sse.send({ type: "wireframe_cleared" });
+    await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeFiles);
+    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeFiles });
+    if (session.slots[PRD_SLOT_IDS.wireframeData]) {
+      await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeData);
+      sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeData });
+    }
     await runWireframeStage({ session, sse, signal });
     return;
   }
 
   // Single-item regen — patch one screen HTML in place.
-  const slots = sessionToSlots(session);
-  const allHtml = requireFileset(slots, PRD_SLOT_IDS.wireframeFiles).files;
+  const allHtml = existingFiles.files;
   const targetFile = `${firstImpactItemId}.html`;
   if (!(targetFile in allHtml)) {
     sse.send({
@@ -301,7 +332,7 @@ async function runWireframeHtmlImpact(
   const out = await engine.runStep({
     stepId: PRD_STEP_IDS.wireframeHtml,
     sessionId: session.id,
-    inputs: slots,
+    inputs: session.slots,
     feedback: description,
     target: firstImpactItemId,
     onlyItemId: firstImpactItemId,
@@ -309,14 +340,16 @@ async function runWireframeHtmlImpact(
     signal,
   });
 
-  // The fanout reduce already produced the full updated fileset (shell +
-  // every screen HTML). Persist it.
   const filesPayload = requireFileset(out, PRD_SLOT_IDS.wireframeFiles);
-  const updated = await storage.setWireframe(session.id, filesPayload.files);
+  const updated = await storage.setSlot(
+    session.id,
+    PRD_SLOT_IDS.wireframeFiles,
+    filesPayload
+  );
   sse.send({
-    type: "wireframe_ready",
-    version: updated.wireframe!.version,
-    files: Object.keys(filesPayload.files),
+    type: "slot",
+    slotId: PRD_SLOT_IDS.wireframeFiles,
+    payload: requireFileset(updated.slots, PRD_SLOT_IDS.wireframeFiles),
   });
   sse.send({
     type: "progress",
@@ -324,5 +357,4 @@ async function runWireframeHtmlImpact(
     status: "completed",
     note: `Updated ${targetFile}`,
   });
-  void phase;
 }

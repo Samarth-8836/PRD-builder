@@ -1,44 +1,96 @@
 "use client";
 
-import { describePhase } from "@/lib/phase-machine";
-import type { Phase } from "@/lib/storage";
+import { PRD_PIPELINE } from "@/lib/pipeline/configs/prd-builder";
+import { describeLifecycle } from "@/lib/pipeline";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
+import type { StepConfig } from "@/lib/pipeline/types";
+import { useDocumentStore } from "@/stores/document";
+
+const CONFIG = PRD_PIPELINE;
+/** Steps shown in the chip strip. Steps with `gate: "auto"` are internal
+ *  pipeline glue (e.g., wireframeData) and are hidden from the user. */
+const VISIBLE_STEPS: readonly StepConfig[] = CONFIG.steps.filter(
+  (s) => s.gate !== "auto"
+);
+
+type ChipState = "pending" | "active" | "review" | "complete";
 
 interface PhaseIndicatorProps {
-  phase: Phase;
+  state: SessionLifecycle;
 }
 
-export function PhaseIndicator({ phase }: PhaseIndicatorProps) {
-  const phase1State =
-    phase === "phase1" ? "active" : "complete";
+export function PhaseIndicator({ state }: PhaseIndicatorProps) {
+  const slots = useDocumentStore((s) => s.slots);
 
-  const workflowState = stageStateFor(phase, "workflow");
-  const screenState = stageStateFor(phase, "screen");
-  const wireframeState = stageStateFor(phase, "wireframe");
-  const phase2Highlighted =
-    workflowState !== "pending" ||
-    screenState !== "pending" ||
-    wireframeState !== "pending";
+  const phase1State: ChipState = state.kind === "phase1" ? "active" : "complete";
+  const anyStepStarted = VISIBLE_STEPS.some(
+    (step) => stepChipState(state, step, slots) !== "pending"
+  );
 
   return (
     <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wider">
       <Chip state={phase1State} label="Phase 1" />
       <span className="text-neutral-700">/</span>
-      <span className={`text-[10px] ${phase2Highlighted ? "text-neutral-300" : "text-neutral-600"}`}>
+      <span
+        className={`text-[10px] ${anyStepStarted ? "text-neutral-300" : "text-neutral-600"}`}
+      >
         Phase 2:
       </span>
-      <SubChip state={workflowState} label="Workflows" />
-      <span className="text-neutral-700">›</span>
-      <SubChip state={screenState} label="Screens" />
-      <span className="text-neutral-700">›</span>
-      <SubChip state={wireframeState} label="Wireframe" />
+      {VISIBLE_STEPS.map((step, i) => {
+        const chip = stepChipState(state, step, slots);
+        return (
+          <span key={String(step.id)} className="contents">
+            <SubChip state={chip} label={shortLabel(step)} />
+            {i < VISIBLE_STEPS.length - 1 && (
+              <span className="text-neutral-700">›</span>
+            )}
+          </span>
+        );
+      })}
       <span className="ml-2 text-neutral-500 normal-case tracking-normal">
-        {describePhase(phase)}
+        {describeLifecycle(state)}
       </span>
     </div>
   );
 }
 
-type ChipState = "pending" | "active" | "review" | "complete";
+function shortLabel(step: StepConfig): string {
+  // The chip strip uses short labels (e.g., "Workflows" not "Workflow Map").
+  // Use the phase label for now — short enough to fit in a chip.
+  // Falls back to the step label.
+  if (step.label === "Workflow Map") return "Workflows";
+  if (step.label === "Screen Inventory") return "Screens";
+  if (step.label === "Wireframe HTML") return "Wireframe";
+  return step.label;
+}
+
+function stepChipState(
+  state: SessionLifecycle,
+  step: StepConfig,
+  slots: Record<string, { finalized: boolean }>
+): ChipState {
+  // Running on this exact step (or a hidden auto-step that produces the
+  // same phase as this step — e.g., wireframeData running maps to the
+  // wireframe phase chip).
+  if (state.kind === "running") {
+    if (state.stepId === step.id) return "active";
+    // If state.stepId is a hidden auto-step in this step's phase, we're
+    // effectively running this phase too.
+    const runningStep = CONFIG.steps.find((s) => s.id === state.stepId);
+    if (runningStep && runningStep.gate === "auto" && runningStep.phase === step.phase) {
+      return "active";
+    }
+  }
+  if (state.kind === "review" && state.stepId === step.id) return "review";
+  if (state.kind === "complete") return "complete";
+
+  // No active state on this step. Check whether all the step's outputs are
+  // populated; if so the step is complete.
+  const allPopulated = step.produces.every((slotId) =>
+    Boolean(slots[String(slotId)]?.finalized)
+  );
+  return allPopulated ? "complete" : "pending";
+}
 
 function Chip({ state, label }: { state: ChipState; label: string }) {
   const classes = chipClassesFor(state);
@@ -88,41 +140,4 @@ function markerFor(state: ChipState): string {
     default:
       return "○";
   }
-}
-
-function stageStateFor(
-  phase: Phase,
-  stage: "workflow" | "screen" | "wireframe"
-): ChipState {
-  if (stage === "workflow") {
-    if (phase === "phase2_workflow_running") return "active";
-    if (phase === "phase2_workflow_review") return "review";
-    if (
-      phase === "phase2_screen_running" ||
-      phase === "phase2_screen_review" ||
-      phase === "phase2_wireframe_running" ||
-      phase === "phase2_wireframe_review" ||
-      phase === "complete"
-    ) {
-      return "complete";
-    }
-    return "pending";
-  }
-  if (stage === "screen") {
-    if (phase === "phase2_screen_running") return "active";
-    if (phase === "phase2_screen_review") return "review";
-    if (
-      phase === "phase2_wireframe_running" ||
-      phase === "phase2_wireframe_review" ||
-      phase === "complete"
-    ) {
-      return "complete";
-    }
-    return "pending";
-  }
-  // wireframe
-  if (phase === "phase2_wireframe_running") return "active";
-  if (phase === "phase2_wireframe_review") return "review";
-  if (phase === "complete") return "complete";
-  return "pending";
 }
