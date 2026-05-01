@@ -281,6 +281,10 @@ The first_impact_item field is OPTIONAL. Use it only when first_impact_step = wi
 CRITICAL RULES:
 - The Project Contract is LOCKED during Phase 2 review. You cannot propose contract modifications. The drift checker (separate LLM call) decides whether a change is implementable without contract changes.
 - Pick the EARLIEST impacted step. If the change affects workflows AND requires new screens, the first impact is workflow (because the screen step depends on the workflow step). The engine re-runs descendants automatically.
+
+CONTRACT-LEVEL CHANGES — special case:
+The four sections of the Project Contract (Goal Statement, Personas, Entity Map, Boundaries) are LOCKED during Phase 2. If the user's request requires modifying ANY of those sections — for example adding/removing a persona, adding/removing an entity, changing the goal, removing or adding a boundary — DO NOT emit MODE: change. Instead, respond in MODE: question and tell the user that the change requires editing the Project Contract, which is only editable in Phase 1. Suggest they click "Roll back to Phase 1" to make the contract edit, then walk forward through the stages again. This applies even when the user's wording sounds like a Phase 2 change ("add a screen for X" but X is a new entity → still a contract change).
+
 - If the request is ambiguous or you need clarification, prefer MODE: question.
 - The first non-whitespace token of your response MUST be "MODE:".
 - Do not include any content before MODE: or any closing remarks after the change_context block.
@@ -333,6 +337,13 @@ first_impact_step: wireframeHtml
 first_impact_item: task-detail
 description: Add a Mark complete toggle/button to the task-detail screen so the user can mark the task done from the detail view itself.
 </change_context>`;
+
+export const PHASE2_CONVERSATION_EXAMPLE_CONTRACT_USER =
+  "Add a new persona for an admin who can see all users' tasks";
+
+export const PHASE2_CONVERSATION_EXAMPLE_CONTRACT_ASSISTANT = `MODE: question
+
+Adding a new persona changes the Project Contract's Personas section, which is locked during Phase 2. To add an admin persona (and the entities/boundaries that go with team visibility), please click "Roll back to Phase 1" — you can edit the contract there, then walk back through the stages. If your previous Phase 2 work is still valid for the updated contract, the system will restore it automatically.`;
 
 export const PHASE2_CONVERSATION_EXAMPLE_DATA_USER =
   "The example task names are too long, make them feel more like real one-line todos";

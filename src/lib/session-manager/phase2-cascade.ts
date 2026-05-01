@@ -48,6 +48,17 @@ export interface RunPhase2CascadeInput {
 
 const engine = new PipelineEngine(PRD_PIPELINE);
 
+/**
+ * Builds the "this change isn't applicable here" note. Always includes
+ * the rollback suggestion so users who have a Phase-1-level change
+ * (new persona, new entity, etc.) misrouted as a Phase-2 change still
+ * get a path forward, even if the conversation classifier + drift
+ * checker both miss it.
+ */
+function NOT_APPLICABLE_NOTE(prefix: string): string {
+  return `${prefix}. Click Approve to walk forward through the stages, then ask again. If this is actually a contract change (new persona, new entity, new boundary, or a goal-statement change), click "Roll back to Phase 1" instead — those edits live in Phase 1.`;
+}
+
 export async function runPhase2Cascade(
   input: RunPhase2CascadeInput
 ): Promise<void> {
@@ -123,7 +134,9 @@ async function runScreenImpact(input: RunPhase2CascadeInput): Promise<void> {
       type: "progress",
       op: "phase2.cascade",
       status: "completed",
-      note: "Screen tweaks apply once the screen list is generated. Click Approve to move on, then ask again.",
+      note: NOT_APPLICABLE_NOTE(
+        "Screen tweaks apply once the screen list is generated"
+      ),
     });
     return;
   }
@@ -168,7 +181,9 @@ async function runWireframeDataImpact(
       type: "progress",
       op: "phase2.cascade",
       status: "completed",
-      note: "Sample-data tweaks take effect once the wireframe is generated. Click Approve through the next stages first.",
+      note: NOT_APPLICABLE_NOTE(
+        "Sample-data tweaks take effect once the wireframe is generated"
+      ),
     });
     return;
   }
@@ -234,7 +249,9 @@ async function runWireframeHtmlImpact(
       type: "progress",
       op: "phase2.cascade",
       status: "completed",
-      note: "Wireframe tweaks apply once the wireframe is generated. Click Approve through the next stages first.",
+      note: NOT_APPLICABLE_NOTE(
+        "Wireframe tweaks apply once the wireframe is generated"
+      ),
     });
     return;
   }
