@@ -420,13 +420,24 @@ export class SessionManager {
       });
     }
     await this.storage.setPhase2Snapshot(session.id, null);
-    const final = await this.storage.setPhase(session.id, snapshot.phase);
+    // Always land at workflow_review (the first review state) regardless
+    // of which review state the snapshot was taken from. The user walks
+    // through one gate at a time; approve() skips stages whose outputs
+    // are already populated, so it's still cheap (no LLM calls) when the
+    // user just wants to traverse to a downstream review state.
+    const final = await this.storage.setPhase(
+      session.id,
+      "phase2_workflow_review"
+    );
     sse.send({ type: "phase", phase: final.phase });
     sse.send({
       type: "progress",
       op: "phase2.restore",
       status: "completed",
-      note: "Restored your previous Phase 2 work — the contract is unchanged",
+      note:
+        "Restored your previous Phase 2 work — the contract is unchanged. " +
+        "Step through Approve to revisit each stage; make a change at any " +
+        "review to override what's restored.",
     });
   }
 
@@ -461,6 +472,24 @@ export class SessionManager {
             "Cannot approve — Workflow Map is missing"
           );
         }
+        // Skip the LLM call when the next stage's output is already
+        // populated (typically post-restore). The user can still trigger
+        // regeneration by making a change at this review state.
+        if (session.documents.screenInventory) {
+          const updated = await this.storage.setPhase(
+            sessionId,
+            "phase2_screen_review"
+          );
+          sse.send({ type: "phase", phase: updated.phase });
+          sse.send({
+            type: "progress",
+            op: "phase2.skip",
+            status: "completed",
+            note:
+              "Screen Inventory already exists from restore — review it, then approve again to continue.",
+          });
+          return;
+        }
         await runScreenStage({ session, sse, signal });
         return;
       }
@@ -474,6 +503,21 @@ export class SessionManager {
           throw new WrongPhaseError(
             "Cannot approve — Phase 2 documents are missing"
           );
+        }
+        if (session.wireframe) {
+          const updated = await this.storage.setPhase(
+            sessionId,
+            "phase2_wireframe_review"
+          );
+          sse.send({ type: "phase", phase: updated.phase });
+          sse.send({
+            type: "progress",
+            op: "phase2.skip",
+            status: "completed",
+            note:
+              "Wireframe already exists from restore — review it, then approve again to mark complete.",
+          });
+          return;
         }
         await runWireframeStage({ session, sse, signal });
         return;

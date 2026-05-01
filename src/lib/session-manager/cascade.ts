@@ -88,6 +88,7 @@ export async function runCascade(input: RunCascadeInput): Promise<void> {
 
 async function runWorkflowReviewCascade(input: RunCascadeInput): Promise<void> {
   const { session, sse, signal, scope, description } = input;
+  const storage = getStorage();
 
   if (scope === "workflow_change") {
     sse.send({
@@ -96,6 +97,18 @@ async function runWorkflowReviewCascade(input: RunCascadeInput): Promise<void> {
       status: "started",
       note: "Updating workflows to reflect the change",
     });
+    // Defense against the snapshot-restore path: the user is at
+    // workflow_review with screen/wireframe possibly restored from a
+    // prior session. A workflow change makes those stale, so clear
+    // them before running the workflow stage. (In a fresh flow, these
+    // slots are already empty, so the clears are no-ops.)
+    if (session.wireframe) {
+      await storage.clearWireframe(session.id);
+      sse.send({ type: "wireframe_cleared" });
+    }
+    if (session.documents.screenInventory) {
+      await storage.clearDocument(session.id, "screenInventory");
+    }
     await runWorkflowStage({
       session,
       sse,
@@ -144,9 +157,15 @@ async function runScreenReviewCascade(input: RunCascadeInput): Promise<void> {
         "Rewinding to the Workflow stage so workflows can be updated; you'll re-approve screens after",
     });
     // Drop the live screen inventory — it'll be regenerated after the
-    // user re-approves the new workflows.
+    // user re-approves the new workflows. Also drop wireframe if it's
+    // present from a snapshot restore: it's downstream of workflows
+    // and would be stale.
     if (session.documents.screenInventory) {
       await storage.clearDocument(session.id, "screenInventory");
+    }
+    if (session.wireframe) {
+      await storage.clearWireframe(session.id);
+      sse.send({ type: "wireframe_cleared" });
     }
     await runWorkflowStage({
       session,
@@ -165,6 +184,12 @@ async function runScreenReviewCascade(input: RunCascadeInput): Promise<void> {
       status: "started",
       note: "Updating screens to reflect the change",
     });
+    // Clear wireframe if present from a snapshot restore — a screen
+    // change makes the rendered HTML stale.
+    if (session.wireframe) {
+      await storage.clearWireframe(session.id);
+      sse.send({ type: "wireframe_cleared" });
+    }
     await runScreenStage({
       session,
       sse,

@@ -53,6 +53,10 @@ export async function runConversation(
   let state: RouterState = "detecting_mode";
   let emittedTo = 0;
   let lastAttempt = 0;
+  let streamingResetSent = false;
+  const oldContractContent = session.documents.projectContract?.content ?? "";
+  const oldContractVersion =
+    session.documents.projectContract?.version ?? 0;
 
   function resetRouter() {
     state = "detecting_mode";
@@ -87,6 +91,20 @@ export async function runConversation(
         if (!m || m.index === undefined) return;
         emittedTo = emittedTo + m.index + m[0].length;
         state = "editing_streaming_contract";
+        // Reset the artifact to empty so the streamed contract appears
+        // as a clean progressive build instead of being appended onto
+        // the previous version. Done once per attempt-1 entry into this
+        // state. The canonical document event after parse success
+        // overwrites this with the full new content.
+        if (!streamingResetSent) {
+          sse.send({
+            type: "document",
+            name: "projectContract",
+            version: oldContractVersion,
+            content: "",
+          });
+          streamingResetSent = true;
+        }
         progressed = true;
         continue;
       }
@@ -129,15 +147,32 @@ export async function runConversation(
     promptSlug: "phase1.conversation",
   });
 
-  const { value } = await execute({
-    system: ctx.system,
-    messages: ctx.messages,
-    correctiveHint: ctx.correctiveHint,
-    parser: parseConversationResponse,
-    signal,
-    onDelta,
-    onRetry,
-  });
+  let value: ParsedConversation;
+  try {
+    const result = await execute({
+      system: ctx.system,
+      messages: ctx.messages,
+      correctiveHint: ctx.correctiveHint,
+      parser: parseConversationResponse,
+      signal,
+      onDelta,
+      onRetry,
+    });
+    value = result.value;
+  } catch (err) {
+    // If the streaming router cleared the artifact in preparation for
+    // an EDIT and the parse never succeeded, restore the prior contract
+    // so the doc panel doesn't show partial / corrupted text.
+    if (streamingResetSent) {
+      sse.send({
+        type: "document",
+        name: "projectContract",
+        version: oldContractVersion,
+        content: oldContractContent,
+      });
+    }
+    throw err;
+  }
 
   if (value.mode === "question") {
     // Canonical answer replaces any streamed chunks (necessary when a

@@ -75,18 +75,24 @@ function parseEditBody(body: string): ParseResult<ParsedEdit> {
   if (!body) return fail("EDIT mode body was empty");
 
   const sumMatch = body.match(SUMMARY_RE);
-  if (!sumMatch) {
-    return fail('EDIT mode requires a "SUMMARY:" header before the CONTRACT block');
+  // SUMMARY is recommended but tolerated if missing — the chat-side
+  // assistant message just becomes a generic confirmation. The CONTRACT
+  // block remains required because that's the actual artifact.
+  let summary = "Updated the contract per your request.";
+  let afterSummary = body;
+  if (sumMatch) {
+    afterSummary = body.slice(sumMatch[0].length);
   }
-  const afterSummary = body.slice(sumMatch[0].length);
 
   const conMatch = afterSummary.match(CONTRACT_RE);
   if (!conMatch || conMatch.index === undefined) {
-    return fail('EDIT mode requires a "CONTRACT:" header after the SUMMARY block');
+    return fail('EDIT mode requires a "CONTRACT:" header introducing the contract');
   }
 
-  const summary = afterSummary.slice(0, conMatch.index).trim();
-  if (!summary) return fail("EDIT mode SUMMARY was empty");
+  if (sumMatch) {
+    const explicitSummary = afterSummary.slice(0, conMatch.index).trim();
+    if (explicitSummary) summary = explicitSummary;
+  }
 
   const contractRaw = afterSummary.slice(conMatch.index + conMatch[0].length).trim();
   if (!contractRaw) return fail("EDIT mode CONTRACT was empty");
