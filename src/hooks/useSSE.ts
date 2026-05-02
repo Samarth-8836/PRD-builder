@@ -177,14 +177,22 @@ export async function rollbackToPhase1(sessionId: string): Promise<void> {
       );
     }
     await consumeSSE(response.body, dispatch);
-    // After rollback, the doc panel should clear non-anchor slots locally
-    // (the server already emitted slot_cleared events for each, but reset
-    // is cheaper than tracking in-flight). Then re-fetch the contract.
-    const sessId = useSessionStore.getState().current?.id;
-    useDocumentStore.getState().reset();
-    if (sessId) await loadSession(sessId);
-    useSessionStore.getState().setDrift(null);
-    useSessionStore.getState().setPendingPreview(null);
+
+    // Only run the cosmetic cleanup if the lifecycle actually transitioned
+    // to phase1. If the server rejected the rollback (e.g. wrong state),
+    // the SSE finished without a state event — `current.state` is whatever
+    // it was before. Resetting + re-fetching in that case visually clears
+    // the doc panel for an instant and then snaps back, looking like a
+    // failed rollback that "undid itself" — which is the bug the user
+    // reported in the M12.3 round of testing.
+    const stateAfter = useSessionStore.getState().current?.state;
+    if (stateAfter?.kind === "phase1") {
+      const sessId = useSessionStore.getState().current?.id;
+      useDocumentStore.getState().reset();
+      if (sessId) await loadSession(sessId);
+      useSessionStore.getState().setDrift(null);
+      useSessionStore.getState().setPendingPreview(null);
+    }
   } finally {
     useChatStore.getState().setStreaming(false);
   }

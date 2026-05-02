@@ -538,24 +538,26 @@ export class SessionManager {
     }
     await this.storage.setSuspendedSnapshot(session.id, null);
 
-    // Always land at the workflow review (the first review state)
-    // regardless of which review state the snapshot was taken from. The
-    // user walks through one gate at a time; approve() skips stages whose
-    // outputs are already populated, so it's still cheap (no LLM calls).
-    const finalState: SessionLifecycle = {
-      kind: "review",
-      stepId: PRD_STEP_IDS.workflow,
-    };
+    // Land where the user was when they rolled back:
+    //   - review:X snapshot -> review:workflow (walk forward, M9 fix)
+    //   - complete snapshot -> complete (the lock is intact, restore in place)
+    // For complete-snapshot restore, no walk-through is needed because
+    // the user wasn't iterating; they just exited and came back.
+    const wasComplete = snapshot.state.kind === "complete";
+    const finalState: SessionLifecycle = wasComplete
+      ? { kind: "complete" }
+      : { kind: "review", stepId: PRD_STEP_IDS.workflow };
     await this.storage.setState(session.id, finalState);
     sse.send({ type: "state", state: finalState });
     sse.send({
       type: "progress",
       op: "phase2.restore",
       status: "completed",
-      note:
-        "Restored your previous Phase 2 work — the contract is unchanged. " +
-        "Step through Approve to revisit each stage; make a change at any " +
-        "review to override what's restored.",
+      note: wasComplete
+        ? "Restored your locked pipeline — the contract is unchanged."
+        : "Restored your previous Phase 2 work — the contract is unchanged. " +
+          "Step through Approve to revisit each stage; make a change at any " +
+          "review to override what's restored.",
     });
   }
 
@@ -698,9 +700,12 @@ export class SessionManager {
         sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
         return;
       }
-      if (session.state.kind !== "review") {
+      if (
+        session.state.kind !== "review" &&
+        session.state.kind !== "complete"
+      ) {
         throw new WrongPhaseError(
-          `Cannot roll back from ${session.state.kind}; rollback is only available from a review state`
+          `Cannot roll back from ${session.state.kind}; rollback is only available from a review state or after the pipeline locks`
         );
       }
 
@@ -799,7 +804,13 @@ function contractsMatch(session: Session, snapshot: SuspendedSnapshot): boolean 
     PRD_SLOT_IDS.projectContract
   )?.trim();
   if (!baseline || !current) return false;
-  return baseline === current && snapshot.state.kind === "review";
+  // Restore is valid for snapshots taken from any review state OR from
+  // complete (M12.2 unblocks rollback at complete). Anything else
+  // (phase1 / phase1_complete / running) is not a rollback path.
+  if (snapshot.state.kind !== "review" && snapshot.state.kind !== "complete") {
+    return false;
+  }
+  return baseline === current;
 }
 
 let cached: SessionManager | null = null;
