@@ -76,6 +76,7 @@ export async function runWorkflowStage(
       stepId: PRD_STEP_IDS.workflow,
       sessionId,
       inputs: session.slots,
+      priorOutputs: session.regenContext,
       feedback,
       signal,
       onProgress: (event) => {

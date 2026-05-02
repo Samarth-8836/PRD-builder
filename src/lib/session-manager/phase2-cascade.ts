@@ -104,21 +104,29 @@ async function runWorkflowImpact(input: RunPhase2CascadeInput): Promise<void> {
       : "Rewinding to the Workflow stage; you'll re-approve downstream stages after",
   });
 
-  if (session.slots[PRD_SLOT_IDS.screenInventory]) {
-    await storage.clearSlot(session.id, PRD_SLOT_IDS.screenInventory);
-    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.screenInventory });
+  // Move both the directly-edited slot (workflow) and its downstream
+  // slots into regenContext. Each entry is cleared from `slots` and
+  // cached for the regen step's `priorOutputs`. Workflow itself is
+  // included so the model can preserve prior workflows where compatible
+  // and only evolve what the change demands. Downstream slots feed the
+  // next-stage regen after the user approves.
+  for (const slotId of [
+    PRD_SLOT_IDS.workflowMap,
+    PRD_SLOT_IDS.screenInventory,
+    PRD_SLOT_IDS.wireframeFiles,
+    PRD_SLOT_IDS.wireframeData,
+  ]) {
+    if (session.slots[slotId]) {
+      await storage.markSlotForRegen(session.id, slotId);
+      sse.send({ type: "slot_cleared", slotId });
+    }
   }
-  if (session.slots[PRD_SLOT_IDS.wireframeFiles]) {
-    await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeFiles);
-    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeFiles });
-  }
-  if (session.slots[PRD_SLOT_IDS.wireframeData]) {
-    await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeData);
-    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeData });
-  }
+  // Refresh in-memory session so runWorkflowStage sees the updated
+  // `slots` (workflow cleared) and `regenContext` (priors cached).
+  const refreshed = (await storage.getSession(session.id))!;
 
   await runWorkflowStage({
-    session,
+    session: refreshed,
     sse,
     signal,
     feedback: description,
@@ -155,17 +163,20 @@ async function runScreenImpact(input: RunPhase2CascadeInput): Promise<void> {
       : "Rewinding to the Screen stage; you'll re-approve the wireframe after",
   });
 
-  if (session.slots[PRD_SLOT_IDS.wireframeFiles]) {
-    await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeFiles);
-    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeFiles });
+  for (const slotId of [
+    PRD_SLOT_IDS.screenInventory,
+    PRD_SLOT_IDS.wireframeFiles,
+    PRD_SLOT_IDS.wireframeData,
+  ]) {
+    if (session.slots[slotId]) {
+      await storage.markSlotForRegen(session.id, slotId);
+      sse.send({ type: "slot_cleared", slotId });
+    }
   }
-  if (session.slots[PRD_SLOT_IDS.wireframeData]) {
-    await storage.clearSlot(session.id, PRD_SLOT_IDS.wireframeData);
-    sse.send({ type: "slot_cleared", slotId: PRD_SLOT_IDS.wireframeData });
-  }
+  const refreshed = (await storage.getSession(session.id))!;
 
   await runScreenStage({
-    session,
+    session: refreshed,
     sse,
     signal,
     feedback: description,

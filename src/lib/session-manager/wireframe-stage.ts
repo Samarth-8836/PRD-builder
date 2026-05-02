@@ -63,6 +63,7 @@ export async function runWireframeStage(
       stepId: PRD_STEP_IDS.wireframeData,
       sessionId,
       inputs: session.slots,
+      priorOutputs: session.regenContext,
       signal,
     });
     const dataPayload = requireJson(dataOut, PRD_SLOT_IDS.wireframeData);
@@ -109,6 +110,7 @@ export async function runWireframeStage(
       stepId: PRD_STEP_IDS.wireframeHtml,
       sessionId,
       inputs: { ...session.slots, ...dataOut },
+      priorOutputs: session.regenContext,
       signal,
       onProgress: (event) => {
         if (event.kind === "substep") {

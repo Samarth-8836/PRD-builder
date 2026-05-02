@@ -125,6 +125,13 @@ export class FileStorage implements IStorage {
     session.slots[key] = withVersion(payload, nextVersion);
     if (!session.slotVersionMax) session.slotVersionMax = {};
     session.slotVersionMax[key] = nextVersion;
+    // The new payload supersedes any prior cached for regen context.
+    if (session.regenContext && key in session.regenContext) {
+      delete session.regenContext[key];
+      if (Object.keys(session.regenContext).length === 0) {
+        delete session.regenContext;
+      }
+    }
     session.updatedAt = new Date().toISOString();
     await this.writeSession(session);
     return session;
@@ -148,6 +155,38 @@ export class FileStorage implements IStorage {
     delete session.slots[key];
     session.updatedAt = new Date().toISOString();
     await this.writeSession(session);
+    return session;
+  }
+
+  async markSlotForRegen(
+    id: string,
+    slotId: DocSlotId | string
+  ): Promise<Session> {
+    const session = await this.requireSession(id);
+    const key = String(slotId);
+    const existing = session.slots[key];
+    if (!existing) return session;
+
+    if (!session.regenContext) session.regenContext = {};
+    session.regenContext[key] = existing;
+    if (!session.slotVersionMax) session.slotVersionMax = {};
+    session.slotVersionMax[key] = Math.max(
+      session.slotVersionMax[key] ?? 0,
+      existing.version
+    );
+    delete session.slots[key];
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
+  async clearRegenContext(id: string): Promise<Session> {
+    const session = await this.requireSession(id);
+    if (session.regenContext) {
+      delete session.regenContext;
+      session.updatedAt = new Date().toISOString();
+      await this.writeSession(session);
+    }
     return session;
   }
 

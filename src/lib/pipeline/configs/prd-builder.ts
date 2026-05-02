@@ -247,6 +247,10 @@ export const PRD_PIPELINE: PipelineConfig = {
                 SLOT_PROJECT_CONTRACT
               ).content;
               let block = `<contract>\n${contract.trim()}\n</contract>`;
+              const priorWorkflowMap = ctx.priorOutputs?.[SLOT_WORKFLOW_MAP];
+              if (priorWorkflowMap?.kind === "markdown") {
+                block += `\n\n<existing_workflows>\n${priorWorkflowMap.content.trim()}\n</existing_workflows>`;
+              }
               if (ctx.feedback) {
                 block += `\n\n<user_feedback>\n${ctx.feedback.trim()}\n</user_feedback>`;
               }
@@ -329,6 +333,10 @@ ${contract.trim()}
 <workflow_map>
 ${workflowMap.trim()}
 </workflow_map>`;
+              const priorScreens = ctx.priorOutputs?.[SLOT_SCREEN_INVENTORY];
+              if (priorScreens?.kind === "markdown") {
+                block += `\n\n<existing_screens>\n${priorScreens.content.trim()}\n</existing_screens>`;
+              }
               if (ctx.feedback) {
                 block += `\n\n<user_feedback>\n${ctx.feedback.trim()}\n</user_feedback>`;
               }
@@ -434,6 +442,10 @@ ${contract.trim()}
 <screen_inventory>
 ${screenInventory.trim()}
 </screen_inventory>`;
+          const priorData = ctx.priorOutputs?.[SLOT_WIREFRAME_DATA];
+          if (priorData?.kind === "json") {
+            block += `\n\n<existing_sample_data>\n${JSON.stringify(priorData.data, null, 2)}\n</existing_sample_data>`;
+          }
           if (ctx.feedback) {
             block += `\n\n<user_feedback>\n${ctx.feedback.trim()}\n</user_feedback>`;
           }

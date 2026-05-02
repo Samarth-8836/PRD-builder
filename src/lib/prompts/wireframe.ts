@@ -20,6 +20,10 @@ export const DUMMY_DATA_SYSTEM = `You are generating realistic sample data for t
 
 You will be given the Project Contract inside <contract>...</contract> and the Screen Inventory inside <screen_inventory>...</screen_inventory>.
 
+You MAY also receive:
+- <existing_sample_data>...</existing_sample_data> — the previous sample data from an earlier pass. When present, preserve the existing entity arrays where the underlying entity types still apply (keep ids, content, and field names verbatim). Add or modify only what the new contract / screen inventory / feedback explicitly requires.
+- <user_feedback>...</user_feedback> — feedback from the user during a Phase 2 review pass describing a desired change to the sample data. The output MUST reflect this feedback.
+
 OUTPUT FORMAT — strict JSON, exactly one object. No code fences, no prose, no preamble. The first non-whitespace character MUST be \`{\`.
 
 The object has one key per entity defined in the contract's Entity Map. Each key is lowercase plural (e.g. "tasks", "lists", "users"). Each value is an array of 3 to 8 sample instances.

@@ -191,6 +191,7 @@ export class PipelineEngine {
       feedback: args.feedback,
       target: args.target ?? args.onlyItemId,
       priorResults: args.priorResults,
+      priorOutputs: args.priorOutputs,
     };
 
     const { runSingle, runFanout, runCompose } = await import(
@@ -315,6 +316,10 @@ export interface RunStepArgs {
    *  honored when the step's runner is `kind: "fanout"`. */
   onlyItemId?: string;
   priorResults?: Record<string, unknown>;
+  /** Slot id -> the prior version of that slot, captured by the cascade
+   *  dispatcher before clearing. Forwarded to `StepContext.priorOutputs`
+   *  so step builders can preserve user-driven customizations. */
+  priorOutputs?: Readonly<Record<string, SlotPayload>>;
 }
 
 function remapToProducedSlots(

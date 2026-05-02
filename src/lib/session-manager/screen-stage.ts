@@ -72,6 +72,7 @@ export async function runScreenStage(
       stepId: PRD_STEP_IDS.screen,
       sessionId,
       inputs: session.slots,
+      priorOutputs: session.regenContext,
       feedback,
       signal,
       onProgress: (event) => {

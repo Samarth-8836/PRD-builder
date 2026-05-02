@@ -660,6 +660,9 @@ export class SessionManager {
       // Drop any stale pending cascade preview — the user is taking a
       // different path now, the in-memory plan is no longer valid.
       clearPendingPreview(sessionId);
+      // Drop any cascade regen context — those cached prior versions
+      // are not part of the rolled-back snapshot.
+      await this.storage.clearRegenContext(sessionId);
 
       // Snapshot every slot except the drift anchor (contract). The user
       // is about to edit the contract; the rest of the artifacts are what

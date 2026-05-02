@@ -87,6 +87,11 @@ export interface StepContext {
   priorResults?: Record<string, unknown>;
   /** Sub-result accumulator for compose runners. Substep id -> parsed value. */
   subResults?: Record<string, unknown>;
+  /** Slot id -> the prior version of that slot, captured by the cascade
+   *  dispatcher before clearing. Steps use this to preserve user-driven
+   *  customizations across regenerations (e.g., a screen the user added
+   *  through a previous cascade should survive a workflow rewind). */
+  priorOutputs?: Readonly<Record<string, SlotPayload>>;
 }
 
 /** A SingleRunner produces one parsed value from one prompt. */
