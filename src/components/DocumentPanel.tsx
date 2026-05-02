@@ -83,8 +83,16 @@ export function DocumentPanel() {
         )}
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <div className="text-xs uppercase tracking-wider text-neutral-500">
-              Document
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-neutral-500">
+              <span>Document</span>
+              {current && current.pipelineVersion > 1 && (
+                <span
+                  className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-[10px] font-medium text-neutral-300"
+                  title={`Locked pipeline version ${current.pipelineVersion}`}
+                >
+                  v{current.pipelineVersion}
+                </span>
+              )}
             </div>
             <div className="truncate text-sm font-semibold text-neutral-200">
               {current ? current.title : "Project Contract"}

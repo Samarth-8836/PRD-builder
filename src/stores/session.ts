@@ -9,6 +9,7 @@ interface CurrentSession {
   id: string;
   title: string;
   state: SessionLifecycle;
+  pipelineVersion: number;
 }
 
 export interface DriftState {

@@ -66,7 +66,11 @@ export async function GET(_req: NextRequest, ctx: RouteParams) {
   // under strict mode.
   const ab = new ArrayBuffer(zip.byteLength);
   new Uint8Array(ab).set(zip);
-  const filename = `${slugify(session.title)}-${shortId(sessionId)}.zip`;
+  const versionSuffix =
+    session.pipelineVersion && session.pipelineVersion > 1
+      ? `-v${session.pipelineVersion}`
+      : "";
+  const filename = `${slugify(session.title)}-${shortId(sessionId)}${versionSuffix}.zip`;
   return new Response(ab, {
     status: 200,
     headers: {

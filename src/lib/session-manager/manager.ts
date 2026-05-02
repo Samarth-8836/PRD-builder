@@ -137,12 +137,7 @@ export class SessionManager {
       ts: new Date().toISOString(),
     });
 
-    sse.send({
-      type: "meta",
-      sessionId: session.id,
-      title: session.title,
-      state: session.state,
-    });
+    emitMeta(sse, session);
 
     this.busy.add(id);
     try {
@@ -150,12 +145,7 @@ export class SessionManager {
         .then(async (title) => {
           if (sse.isClosed()) return;
           const updated = await this.storage.setTitle(id, title);
-          sse.send({
-            type: "meta",
-            sessionId: id,
-            title: updated.title,
-            state: updated.state,
-          });
+          emitMeta(sse, updated);
         })
         .catch((err: unknown) => {
           // eslint-disable-next-line no-console
@@ -214,12 +204,7 @@ export class SessionManager {
         ts: new Date().toISOString(),
       });
       const refreshed = (await this.storage.getSession(sessionId))!;
-      sse.send({
-        type: "meta",
-        sessionId: refreshed.id,
-        title: refreshed.title,
-        state: refreshed.state,
-      });
+      emitMeta(sse, refreshed);
 
       const state = refreshed.state;
       switch (state.kind) {
@@ -228,14 +213,15 @@ export class SessionManager {
           await this.handlePhase1Chat(refreshed, trimmed, sse, signal);
           return;
         case "review":
+        case "complete":
+          // Iteration on complete (M12.2): a change request after the
+          // pipeline locks runs through the same classifier + drift +
+          // cascade-preview gate as a review-state change. The cascade
+          // bumps `pipelineVersion` once the iteration settles.
           await this.handlePhase2ReviewChat(refreshed, trimmed, sse, signal);
           return;
         case "running":
           throw new SessionBusyError(sessionId);
-        case "complete":
-          throw new WrongPhaseError(
-            "Session is already marked complete; roll back to Phase 1 to revise."
-          );
       }
     } finally {
       this.busy.delete(sessionId);
@@ -380,12 +366,7 @@ export class SessionManager {
         sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
         return;
       }
-      sse.send({
-        type: "meta",
-        sessionId: session.id,
-        title: session.title,
-        state: session.state,
-      });
+      emitMeta(sse, session);
 
       // Persist the change summary to chat history NOW (after Confirm).
       // This is the canonical "change applied" record — it never lands
@@ -408,6 +389,15 @@ export class SessionManager {
         firstImpactItemId: pending.preview.firstImpactItemId,
       });
 
+      // Iteration tracking (M12.2): if the cascade started from
+      // `complete`, mark the session so the next return-to-complete
+      // bumps pipelineVersion. The flag is also bumped at the end of
+      // this method for in-place patches that don't transition.
+      const wasComplete = session.state.kind === "complete";
+      if (wasComplete) {
+        await this.storage.setPendingVersionBump(sessionId, true);
+      }
+
       // Drop the pending preview before running so a mid-cascade reload
       // doesn't see a stale plan. The cascade itself drives state via
       // its own progress events.
@@ -422,6 +412,27 @@ export class SessionManager {
         description: pending.description,
         state: session.state,
       });
+
+      // In-place patches (data-only, single-screen wireframe regen) do
+      // not transition state. If we started from `complete` and the
+      // state is still `complete` at the end of the cascade, bump now —
+      // the iteration is done. Full-rewind cascades stay
+      // `pendingVersionBump=true` and bump in approve() at the next
+      // transition to `complete`.
+      if (wasComplete) {
+        const after = await this.storage.getSession(sessionId);
+        if (after && after.state.kind === "complete") {
+          const bumped = await this.storage.bumpPipelineVersion(sessionId);
+          await this.storage.setPendingVersionBump(sessionId, false);
+          emitMeta(sse, bumped);
+          sse.send({
+            type: "progress",
+            op: "phase2.iteration",
+            status: "completed",
+            note: `Locked v${bumped.pipelineVersion ?? 1}.`,
+          });
+        }
+      }
     } finally {
       this.busy.delete(sessionId);
     }
@@ -452,12 +463,7 @@ export class SessionManager {
         throw new NoContractError(sessionId);
       }
 
-      sse.send({
-        type: "meta",
-        sessionId: session.id,
-        title: session.title,
-        state: session.state,
-      });
+      emitMeta(sse, session);
 
       let validateResult;
       try {
@@ -516,6 +522,20 @@ export class SessionManager {
         [...snapshot.changeLog]
       );
     }
+    // Restore pipelineVersion + pendingVersionBump so the version chip
+    // and any in-flight iteration flag survive the rollback round-trip.
+    if (snapshot.pipelineVersion !== undefined) {
+      await this.storage.setPipelineVersion(
+        session.id,
+        snapshot.pipelineVersion
+      );
+    }
+    if (snapshot.pendingVersionBump !== undefined) {
+      await this.storage.setPendingVersionBump(
+        session.id,
+        snapshot.pendingVersionBump
+      );
+    }
     await this.storage.setSuspendedSnapshot(session.id, null);
 
     // Always land at the workflow review (the first review state)
@@ -554,12 +574,7 @@ export class SessionManager {
         return;
       }
 
-      sse.send({
-        type: "meta",
-        sessionId: session.id,
-        title: session.title,
-        state: session.state,
-      });
+      emitMeta(sse, session);
 
       const state = session.state;
       if (state.kind !== "review") {
@@ -637,14 +652,25 @@ export class SessionManager {
           );
         }
         const next: SessionLifecycle = { kind: "complete" };
-        await this.storage.setState(sessionId, next);
+        let updated = await this.storage.setState(sessionId, next);
         sse.send({ type: "state", state: next });
+
+        // Iteration completion: if pendingVersionBump is set, bump
+        // pipelineVersion now and clear the flag. Re-emit meta so the
+        // header chip + export filename pick up the new version.
+        if (session.pendingVersionBump) {
+          updated = await this.storage.bumpPipelineVersion(sessionId);
+          await this.storage.setPendingVersionBump(sessionId, false);
+          emitMeta(sse, updated);
+        }
+
         sse.send({
           type: "progress",
           op: "phase2.complete",
           status: "completed",
-          note:
-            "All four artifacts are locked in. Click Export to download the bundle.",
+          note: session.pendingVersionBump
+            ? `Locked v${updated.pipelineVersion ?? 1}. Click Export to download the bundle.`
+            : "All four artifacts are locked in. Click Export to download the bundle.",
         });
         return;
       }
@@ -701,6 +727,8 @@ export class SessionManager {
           getMarkdownContent(session.slots, anchor) ?? "",
         changeLog: session.changeLog ? [...session.changeLog] : undefined,
         changeLogSummary: session.changeLogSummary,
+        pipelineVersion: session.pipelineVersion ?? 1,
+        pendingVersionBump: session.pendingVersionBump,
         takenAt: new Date().toISOString(),
       };
       await this.storage.setSuspendedSnapshot(sessionId, snapshot);
@@ -716,15 +744,15 @@ export class SessionManager {
       // restore. If the contract is unchanged on re-validate, the log
       // will be restored along with the slots.
       await this.storage.clearChangeLog(sessionId);
+      // Drop the iteration flag — rolling back abandons whatever
+      // iteration was in progress; no version bump is owed.
+      if (session.pendingVersionBump) {
+        await this.storage.setPendingVersionBump(sessionId, false);
+      }
 
       const next: SessionLifecycle = { kind: "phase1" };
       const updated = await this.storage.setState(sessionId, next);
-      sse.send({
-        type: "meta",
-        sessionId: updated.id,
-        title: updated.title,
-        state: updated.state,
-      });
+      emitMeta(sse, updated);
       sse.send({ type: "state", state: next });
       sse.send({
         type: "progress",
@@ -748,6 +776,16 @@ export class SessionManager {
   async getSession(id: string): Promise<Session | null> {
     return this.storage.getSession(id);
   }
+}
+
+function emitMeta(sse: SSEWriter, session: Session): void {
+  sse.send({
+    type: "meta",
+    sessionId: session.id,
+    title: session.title,
+    state: session.state,
+    pipelineVersion: session.pipelineVersion ?? 1,
+  });
 }
 
 function contractsMatch(session: Session, snapshot: SuspendedSnapshot): boolean {

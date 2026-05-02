@@ -14,6 +14,7 @@ export type StreamEvent =
       sessionId: string;
       title: string;
       state: SessionLifecycle;
+      pipelineVersion: number;
     }
   /** Streamed token of the in-progress assistant chat message. Additive. */
   | { type: "chunk"; text: string }

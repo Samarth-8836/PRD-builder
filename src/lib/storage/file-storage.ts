@@ -43,6 +43,7 @@ export class FileStorage implements IStorage {
       createdAt: now,
       updatedAt: now,
       state: { kind: "phase1" },
+      pipelineVersion: 1,
       slots: {},
       chat: [],
     };
@@ -240,6 +241,34 @@ export class FileStorage implements IStorage {
       session.updatedAt = new Date().toISOString();
       await this.writeSession(session);
     }
+    return session;
+  }
+
+  async setPipelineVersion(id: string, version: number): Promise<Session> {
+    const session = await this.requireSession(id);
+    session.pipelineVersion = version;
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
+  async bumpPipelineVersion(id: string): Promise<Session> {
+    const session = await this.requireSession(id);
+    session.pipelineVersion = (session.pipelineVersion ?? 1) + 1;
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
+  async setPendingVersionBump(
+    id: string,
+    pending: boolean
+  ): Promise<Session> {
+    const session = await this.requireSession(id);
+    if (pending) session.pendingVersionBump = true;
+    else delete session.pendingVersionBump;
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
     return session;
   }
 

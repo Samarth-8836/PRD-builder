@@ -39,6 +39,16 @@ export interface Session {
   updatedAt: string;
   /** Lifecycle state. Replaces the legacy `phase` string union. */
   state: SessionLifecycle;
+  /** Monotonically-increasing version of the locked pipeline output.
+   *  v1 on creation; bumped on iteration-on-complete (M12.2). The export
+   *  ZIP filename includes this number so the user can see at a glance
+   *  which lock they downloaded. */
+  pipelineVersion: number;
+  /** Set true when an iteration cascade starts from `state.kind ===
+   *  "complete"` and transitions away from complete. Cleared (with a
+   *  pipelineVersion bump) when the user re-reaches `complete` via
+   *  Approve, or on rollback (no bump — the iteration was abandoned). */
+  pendingVersionBump?: boolean;
   /** Opaque slot-keyed payload map. Slot ids are declared by the active
    *  pipeline config (`PipelineConfig.slots`). */
   slots: Record<string, SlotPayload>;
@@ -93,6 +103,12 @@ export interface SuspendedSnapshot {
   changeLog?: ChangeLogEntry[];
   /** Rolling summary of out-of-window changeLog entries at rollback. */
   changeLogSummary?: string;
+  /** pipelineVersion at rollback time. Restored on suspended-restore so
+   *  the version chip and export filename reflect the user's prior lock. */
+  pipelineVersion?: number;
+  /** pendingVersionBump at rollback time — only set when the user rolled
+   *  back mid-iteration. Almost always undefined. */
+  pendingVersionBump?: boolean;
   takenAt: string;
 }
 
@@ -145,6 +161,12 @@ export interface IStorage {
   ): Promise<Session>;
   /** Drop the entire changeLog + changeLogSummary (e.g., on rollback). */
   clearChangeLog(id: string): Promise<Session>;
+  /** Set pipelineVersion to a specific value (used by suspended-restore). */
+  setPipelineVersion(id: string, version: number): Promise<Session>;
+  /** Increment pipelineVersion by 1. Returns the updated session. */
+  bumpPipelineVersion(id: string): Promise<Session>;
+  /** Set or clear the pendingVersionBump flag. */
+  setPendingVersionBump(id: string, pending: boolean): Promise<Session>;
   setState(id: string, state: SessionLifecycle): Promise<Session>;
   setSuspendedSnapshot(
     id: string,

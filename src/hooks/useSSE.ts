@@ -206,6 +206,7 @@ function dispatch(event: StreamEvent): void {
         id: event.sessionId,
         title: event.title,
         state: event.state,
+        pipelineVersion: event.pipelineVersion,
       });
       session.upsert({
         id: event.sessionId,
@@ -238,7 +239,10 @@ function dispatch(event: StreamEvent): void {
       return;
     case "state":
       if (session.current) {
-        session.setCurrent({ ...session.current, state: event.state });
+        session.setCurrent({
+          ...session.current,
+          state: event.state,
+        });
         session.upsert({
           id: session.current.id,
           title: session.current.title,
@@ -307,6 +311,7 @@ export async function loadSession(id: string): Promise<void> {
     id: s.id,
     title: s.title,
     state: s.state,
+    pipelineVersion: s.pipelineVersion ?? 1,
   });
   useSessionStore.getState().setDrift(null);
   useSessionStore.getState().setPendingPreview(null);

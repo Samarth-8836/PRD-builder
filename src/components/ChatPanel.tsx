@@ -36,11 +36,16 @@ export function ChatPanel() {
   const previewPending = Boolean(pendingPreview);
   const inAnyReview = state?.kind === "review";
   const isComplete = state?.kind === "complete";
-  const canRollback = inAnyReview;
+  // Iteration on complete (M12.2): chat input + rollback are available
+  // at `complete` so the user can request a new change. The change runs
+  // through the same classifier + drift + preview-confirm flow.
+  const canRollback = inAnyReview || isComplete;
 
   async function submit() {
     const trimmed = input.trim();
     if (!trimmed || streaming || blocked || previewPending) return;
+    // Note: !isComplete check intentionally absent — iteration on
+    // complete is allowed (M12.2).
     setInput("");
     try {
       await sendChatMessage({ message: trimmed, sessionId: current?.id });
@@ -128,7 +133,7 @@ export function ChatPanel() {
           rows={2}
           placeholder={placeholder}
           className="w-full resize-none rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={streaming || blocked || isComplete || previewPending}
+          disabled={streaming || blocked || previewPending}
         />
         <div className="mt-2 flex justify-between gap-2">
           {canRollback && !blocked ? (
@@ -144,7 +149,7 @@ export function ChatPanel() {
           )}
           <button
             onClick={() => void submit()}
-            disabled={streaming || blocked || isComplete || previewPending || !input.trim()}
+            disabled={streaming || blocked || previewPending || !input.trim()}
             className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
           >
             Send
@@ -165,7 +170,7 @@ function computePlaceholder(args: {
     return "Change blocked. Roll back to Phase 1 to continue editing.";
   }
   if (args.isComplete) {
-    return "Session is complete. Roll back to Phase 1 to revise.";
+    return "Pipeline locked. Request a change to iterate, or roll back to Phase 1 to revise the contract.";
   }
   if (!args.hasSession) {
     return CONFIG.ui?.initialChatPlaceholder ?? "Type a one-line product idea";
