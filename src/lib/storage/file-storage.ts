@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
   ChangeLogEntry,
+  DiffSummary,
   DocSlotId,
   SlotPayload,
 } from "@/lib/pipeline/types";
@@ -241,6 +242,32 @@ export class FileStorage implements IStorage {
       session.updatedAt = new Date().toISOString();
       await this.writeSession(session);
     }
+    return session;
+  }
+
+  async appendDiffSummary(
+    id: string,
+    summary: DiffSummary
+  ): Promise<Session> {
+    const session = await this.requireSession(id);
+    if (!session.changeLog || session.changeLog.length === 0) {
+      // No entry to attach to — the slot change happened outside of any
+      // confirmed cascade (initial generation, restore, etc.). Drop the
+      // diff silently.
+      return session;
+    }
+    const entry = session.changeLog[session.changeLog.length - 1]!;
+    if (!entry.diffSummaries) entry.diffSummaries = [];
+    const existingIdx = entry.diffSummaries.findIndex(
+      (d) => d.slotId === summary.slotId
+    );
+    if (existingIdx >= 0) {
+      entry.diffSummaries[existingIdx] = summary;
+    } else {
+      entry.diffSummaries.push(summary);
+    }
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
     return session;
   }
 

@@ -2,6 +2,7 @@ import {
   changeLogWindowFor,
   ensureChangeLogCompressed,
 } from "@/lib/context";
+import { fireDiffSummary } from "@/lib/operations";
 import { PipelineEngine } from "@/lib/pipeline";
 import {
   PRD_PIPELINE,
@@ -13,6 +14,10 @@ import type { SessionLifecycle } from "@/lib/pipeline/state";
 import type { SlotPayload } from "@/lib/pipeline/types";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Session } from "@/lib/storage";
+
+const SLOT_LABEL: Record<string, string> = Object.fromEntries(
+  PRD_PIPELINE.slots.map((s) => [String(s.id), s.label] as const)
+);
 
 /**
  * Phase 2 Stage 2 — Wireframe.
@@ -80,6 +85,8 @@ export async function runWireframeStage(
     ).length;
 
     // Persist the data slot.
+    const beforeData =
+      compressedSession.regenContext?.[PRD_SLOT_IDS.wireframeData];
     const afterData = await storage.setSlot(
       sessionId,
       PRD_SLOT_IDS.wireframeData,
@@ -89,6 +96,13 @@ export async function runWireframeStage(
       type: "slot",
       slotId: PRD_SLOT_IDS.wireframeData,
       payload: afterData.slots[PRD_SLOT_IDS.wireframeData] as SlotPayload,
+    });
+    fireDiffSummary({
+      sessionId,
+      slotId: PRD_SLOT_IDS.wireframeData,
+      slotLabel: SLOT_LABEL[PRD_SLOT_IDS.wireframeData] ?? "Sample Data",
+      before: beforeData,
+      after: afterData.slots[PRD_SLOT_IDS.wireframeData]!,
     });
     sse.send({
       type: "progress",
@@ -169,15 +183,25 @@ export async function runWireframeStage(
     });
 
     const filesPayload = requireFileset(htmlOut, PRD_SLOT_IDS.wireframeFiles);
+    const beforeFiles =
+      compressedSession.regenContext?.[PRD_SLOT_IDS.wireframeFiles];
     const updated = await storage.setSlot(
       sessionId,
       PRD_SLOT_IDS.wireframeFiles,
       filesPayload
     );
+    const newFiles = requireFileset(updated.slots, PRD_SLOT_IDS.wireframeFiles);
     sse.send({
       type: "slot",
       slotId: PRD_SLOT_IDS.wireframeFiles,
-      payload: requireFileset(updated.slots, PRD_SLOT_IDS.wireframeFiles),
+      payload: newFiles,
+    });
+    fireDiffSummary({
+      sessionId,
+      slotId: PRD_SLOT_IDS.wireframeFiles,
+      slotLabel: SLOT_LABEL[PRD_SLOT_IDS.wireframeFiles] ?? "Wireframe",
+      before: beforeFiles,
+      after: newFiles,
     });
 
     const reviewState: SessionLifecycle = {

@@ -16,13 +16,17 @@
  * target doesn't exist yet, we emit a note instead of running anything.
  */
 
-import { formatDataJs } from "@/lib/operations";
+import { fireDiffSummary, formatDataJs } from "@/lib/operations";
 import { PipelineEngine } from "@/lib/pipeline";
 import {
   PRD_PIPELINE,
   PRD_SLOT_IDS,
   PRD_STEP_IDS,
 } from "@/lib/pipeline/configs/prd-builder";
+
+const SLOT_LABEL: Record<string, string> = Object.fromEntries(
+  PRD_PIPELINE.slots.map((s) => [String(s.id), s.label] as const)
+);
 import { requireFileset, requireJson } from "@/lib/pipeline/slots";
 import type { SessionLifecycle } from "@/lib/pipeline/state";
 import { type SSEWriter } from "@/lib/streaming";
@@ -226,6 +230,7 @@ async function runWireframeDataImpact(
   const data = dataPayload.data as Record<string, unknown>;
 
   // Persist the new data slot.
+  const beforeData = session.slots[PRD_SLOT_IDS.wireframeData];
   const afterData = await storage.setSlot(
     session.id,
     PRD_SLOT_IDS.wireframeData,
@@ -236,6 +241,13 @@ async function runWireframeDataImpact(
     slotId: PRD_SLOT_IDS.wireframeData,
     payload: afterData.slots[PRD_SLOT_IDS.wireframeData]!,
   });
+  fireDiffSummary({
+    sessionId: session.id,
+    slotId: PRD_SLOT_IDS.wireframeData,
+    slotLabel: SLOT_LABEL[PRD_SLOT_IDS.wireframeData] ?? "Sample Data",
+    before: beforeData,
+    after: afterData.slots[PRD_SLOT_IDS.wireframeData]!,
+  });
   sse.send({
     type: "progress",
     op: "phase2.dummy_data",
@@ -244,6 +256,7 @@ async function runWireframeDataImpact(
   });
 
   // Patch data.js inside the fileset.
+  const beforeFiles = existingFiles;
   const nextFiles: Record<string, string> = {
     ...existingFiles.files,
     "data.js": formatDataJs(data),
@@ -257,10 +270,18 @@ async function runWireframeDataImpact(
       version: 0,
     }
   );
+  const newFiles = requireFileset(updated.slots, PRD_SLOT_IDS.wireframeFiles);
   sse.send({
     type: "slot",
     slotId: PRD_SLOT_IDS.wireframeFiles,
-    payload: requireFileset(updated.slots, PRD_SLOT_IDS.wireframeFiles),
+    payload: newFiles,
+  });
+  fireDiffSummary({
+    sessionId: session.id,
+    slotId: PRD_SLOT_IDS.wireframeFiles,
+    slotLabel: SLOT_LABEL[PRD_SLOT_IDS.wireframeFiles] ?? "Wireframe",
+    before: beforeFiles,
+    after: newFiles,
   });
   sse.send({
     type: "progress",
@@ -352,15 +373,24 @@ async function runWireframeHtmlImpact(
   });
 
   const filesPayload = requireFileset(out, PRD_SLOT_IDS.wireframeFiles);
+  const beforeFiles = existingFiles;
   const updated = await storage.setSlot(
     session.id,
     PRD_SLOT_IDS.wireframeFiles,
     filesPayload
   );
+  const newFiles = requireFileset(updated.slots, PRD_SLOT_IDS.wireframeFiles);
   sse.send({
     type: "slot",
     slotId: PRD_SLOT_IDS.wireframeFiles,
-    payload: requireFileset(updated.slots, PRD_SLOT_IDS.wireframeFiles),
+    payload: newFiles,
+  });
+  fireDiffSummary({
+    sessionId: session.id,
+    slotId: PRD_SLOT_IDS.wireframeFiles,
+    slotLabel: SLOT_LABEL[PRD_SLOT_IDS.wireframeFiles] ?? "Wireframe",
+    before: beforeFiles,
+    after: newFiles,
   });
   sse.send({
     type: "progress",

@@ -70,6 +70,18 @@ export interface DocSlot {
 // Step configuration
 // ---------------------------------------------------------------------------
 
+/** Per-slot 1-2 sentence diff summary attached to a ChangeLogEntry once
+ *  the slot is regenerated during the iteration. Generated post-hoc by a
+ *  small LLM call (`summarize.diff_summary`) and persisted via
+ *  `IStorage.appendDiffSummary`. */
+export interface DiffSummary {
+  slotId: string;
+  /** Slot label at the time of generation, for UI rendering. */
+  slotLabel: string;
+  summary: string;
+  ts: string;
+}
+
 /** Append-only record of one confirmed Phase-2 change request. The session
  *  carries an array of these in `Session.changeLog`. Step builders surface
  *  recent entries to the LLM as `<change_history>`, so regenerated artifacts
@@ -84,6 +96,11 @@ export interface ChangeLogEntry {
   firstImpactStepId: string;
   /** Optional fanout sub-target id (e.g. one screen id within wireframeHtml). */
   firstImpactItemId?: string;
+  /** Per-slot diff summaries, populated post-hoc as each slot regenerates
+   *  during the iteration. Empty/missing means "summaries pending or not
+   *  yet generated" — the HistoryPanel renders "(summary pending)" in
+   *  that case. */
+  diffSummaries?: DiffSummary[];
 }
 
 /** Compressed view of a session's change log: the most recent entries

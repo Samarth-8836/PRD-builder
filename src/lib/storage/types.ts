@@ -20,6 +20,7 @@
 import type { SessionLifecycle } from "@/lib/pipeline/state";
 import type {
   ChangeLogEntry,
+  DiffSummary,
   DocSlotId,
   SlotPayload,
 } from "@/lib/pipeline/types";
@@ -161,6 +162,15 @@ export interface IStorage {
   ): Promise<Session>;
   /** Drop the entire changeLog + changeLogSummary (e.g., on rollback). */
   clearChangeLog(id: string): Promise<Session>;
+  /** Append a per-slot diff summary to the most-recent ChangeLogEntry.
+   *  No-op if `changeLog` is empty (e.g. the slot was set during initial
+   *  generation, before any cascade). If a summary for the same slotId
+   *  already exists on that entry, it is overwritten in place — the
+   *  latest regen wins. */
+  appendDiffSummary(
+    id: string,
+    summary: DiffSummary
+  ): Promise<Session>;
   /** Set pipelineVersion to a specific value (used by suspended-restore). */
   setPipelineVersion(id: string, version: number): Promise<Session>;
   /** Increment pipelineVersion by 1. Returns the updated session. */

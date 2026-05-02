@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import { HistoryPanel } from "./HistoryPanel";
 import { Markdown } from "./Markdown";
 import { PhaseIndicator } from "./PhaseIndicator";
 import { WireframeViewer } from "./WireframeViewer";
@@ -28,6 +30,7 @@ export function DocumentPanel() {
   const setActiveTab = useDocumentStore((s) => s.setActiveTab);
   const current = useSessionStore((s) => s.current);
   const streaming = useChatStore((s) => s.streaming);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const state = current?.state;
   const contractClient = slots[PRD_SLOT_IDS.projectContract];
@@ -99,6 +102,15 @@ export function DocumentPanel() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {current && (
+              <button
+                onClick={() => setHistoryOpen(true)}
+                className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1 text-xs font-medium text-neutral-200 hover:bg-neutral-800"
+                title="View confirmed change history"
+              >
+                History
+              </button>
+            )}
             {showExport && current && (
               <a
                 href={`/api/export/${current.id}`}
@@ -130,6 +142,7 @@ export function DocumentPanel() {
         <DocumentTabs activeTab={activeTab} onSelect={setActiveTab} />
       </header>
       <DocumentBody activeTab={activeTab} />
+      <HistoryPanel open={historyOpen} onClose={() => setHistoryOpen(false)} />
     </div>
   );
 }

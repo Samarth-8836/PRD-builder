@@ -58,6 +58,8 @@ import {
   SUMMARIZE_CHANGELOG_WINDOW_SYSTEM,
   SUMMARIZE_CHAT_WINDOW_CORRECTIVE_HINT,
   SUMMARIZE_CHAT_WINDOW_SYSTEM,
+  SUMMARIZE_DIFF_SUMMARY_CORRECTIVE_HINT,
+  SUMMARIZE_DIFF_SUMMARY_SYSTEM,
 } from "./summarize";
 
 export type PromptSlug =
@@ -76,7 +78,8 @@ export type PromptSlug =
   | "phase2.wireframe_shell"
   | "phase2.screen_html"
   | "summarize.chat_window"
-  | "summarize.changelog_window";
+  | "summarize.changelog_window"
+  | "summarize.diff_summary";
 
 export interface PromptSpec {
   system: string;
@@ -201,6 +204,10 @@ const REGISTRY: Record<PromptSlug, PromptSpec> = {
   "summarize.changelog_window": {
     system: SUMMARIZE_CHANGELOG_WINDOW_SYSTEM,
     correctiveHint: SUMMARIZE_CHANGELOG_WINDOW_CORRECTIVE_HINT,
+  },
+  "summarize.diff_summary": {
+    system: SUMMARIZE_DIFF_SUMMARY_SYSTEM,
+    correctiveHint: SUMMARIZE_DIFF_SUMMARY_CORRECTIVE_HINT,
   },
 };
 

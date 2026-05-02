@@ -54,3 +54,23 @@ export const SUMMARIZE_CHANGELOG_WINDOW_CORRECTIVE_HINT = (reason: string) =>
   `Your previous response was rejected. Reason: ${reason}
 
 Output the summary text directly — no code fences, no preamble, no trailing commentary. 1-3 short paragraphs, max ~150 words.`;
+
+// ---------------------------------------------------------------------------
+// 3. Per-slot diff summary (M12.3)
+// ---------------------------------------------------------------------------
+
+export const SUMMARIZE_DIFF_SUMMARY_SYSTEM = `You are summarizing what changed between two versions of one artifact in a software product design pipeline (Project Contract / Workflow Map / Screen Inventory / Sample Data / Wireframe).
+
+You will be given:
+- <slot_label>...</slot_label> — what kind of artifact this is (e.g. "Workflow Map").
+- <before>...</before> — the version before the change (may be "(none)" if the artifact didn't exist yet).
+- <after>...</after> — the version after the change.
+
+OUTPUT — 1-2 short sentences describing CONCRETE differences, written in plain past tense ("Added X", "Renamed Y to Z", "Removed W", "Replaced A with B"). Reference specific names / ids where possible. Do NOT enumerate unchanged content. Do NOT include preambles like "Here is the summary:". Do NOT use code fences.
+
+If the only change is incidental (whitespace, ordering of identical items), output exactly: "No material change."`;
+
+export const SUMMARIZE_DIFF_SUMMARY_CORRECTIVE_HINT = (reason: string) =>
+  `Your previous response was rejected. Reason: ${reason}
+
+Output 1-2 short sentences in plain past tense describing concrete differences. No preamble, no code fences.`;

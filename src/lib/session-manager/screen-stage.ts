@@ -2,6 +2,7 @@ import {
   changeLogWindowFor,
   ensureChangeLogCompressed,
 } from "@/lib/context";
+import { fireDiffSummary } from "@/lib/operations";
 import { PipelineEngine } from "@/lib/pipeline";
 import {
   PRD_PIPELINE,
@@ -12,6 +13,10 @@ import { requireMarkdown } from "@/lib/pipeline/slots";
 import type { SessionLifecycle } from "@/lib/pipeline/state";
 import { type SSEWriter } from "@/lib/streaming";
 import { getStorage, type Session } from "@/lib/storage";
+
+const SLOT_LABEL: Record<string, string> = Object.fromEntries(
+  PRD_PIPELINE.slots.map((s) => [String(s.id), s.label] as const)
+);
 
 /**
  * Phase 2 Stage 1b — Screen Inventory.
@@ -131,11 +136,20 @@ export async function runScreenStage(
 
     const slotId = PRD_SLOT_IDS.screenInventory;
     const payload = requireMarkdown(out, slotId);
+    const before = compressedSession.regenContext?.[slotId];
     const updated = await storage.setSlot(sessionId, slotId, payload);
+    const newPayload = requireMarkdown(updated.slots, slotId);
     sse.send({
       type: "slot",
       slotId,
-      payload: requireMarkdown(updated.slots, slotId),
+      payload: newPayload,
+    });
+    fireDiffSummary({
+      sessionId,
+      slotId,
+      slotLabel: SLOT_LABEL[slotId] ?? slotId,
+      before,
+      after: newPayload,
     });
     sse.send({
       type: "progress",

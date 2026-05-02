@@ -14,3 +14,4 @@ export * from "./op-2-3a-dummy-data";
 export * from "./op-2-3b-wireframe-shell";
 export * from "./op-2-3c-screen-html";
 export * from "./format-helpers";
+export { fireDiffSummary, runDiffSummary } from "./diff-summary";
