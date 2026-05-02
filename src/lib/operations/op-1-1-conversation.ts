@@ -1,4 +1,4 @@
-import { buildContext } from "@/lib/context";
+import { buildContext, ensureChatCompressed } from "@/lib/context";
 import {
   parseConversationResponse,
   type ParsedConversation,
@@ -147,8 +147,12 @@ export async function runConversation(
 
   sse.send({ type: "progress", op: "op-1-1", status: "started", note: "Thinking" });
 
+  // Compress old chat into a rolling summary if the verbatim window
+  // overflowed since the last call, so prompts retain coherent context
+  // across long sessions without unbounded prompt growth.
+  const compressedSession = await ensureChatCompressed(session.id);
   const ctx = buildContext({
-    session,
+    session: compressedSession,
     userMessage,
     promptSlug: "phase1.conversation",
   });

@@ -397,6 +397,17 @@ export class SessionManager {
         ts: new Date().toISOString(),
       });
 
+      // Append the confirmed change to the session's change log so
+      // subsequent regenerations can see why the artifact looks the way
+      // it does (surfaced as `<change_history>` in step prompts).
+      await this.storage.appendChangeLog(sessionId, {
+        ts: new Date().toISOString(),
+        description: pending.description,
+        summary: pending.summary,
+        firstImpactStepId: pending.preview.firstImpactStepId,
+        firstImpactItemId: pending.preview.firstImpactItemId,
+      });
+
       // Drop the pending preview before running so a mid-cascade reload
       // doesn't see a stale plan. The cascade itself drives state via
       // its own progress events.
@@ -494,6 +505,16 @@ export class SessionManager {
         slotId,
         payload: updated.slots[slotId]!,
       });
+    }
+    // Restore the change log so subsequent regenerations remember the
+    // user's prior intent (group-lists screen etc.). The summary block
+    // is restored alongside.
+    if (snapshot.changeLog && snapshot.changeLog.length > 0) {
+      await this.storage.setChangeLogWindow(
+        session.id,
+        snapshot.changeLogSummary ?? "",
+        [...snapshot.changeLog]
+      );
     }
     await this.storage.setSuspendedSnapshot(session.id, null);
 
@@ -678,6 +699,8 @@ export class SessionManager {
         state: session.state,
         anchorAtRollback:
           getMarkdownContent(session.slots, anchor) ?? "",
+        changeLog: session.changeLog ? [...session.changeLog] : undefined,
+        changeLogSummary: session.changeLogSummary,
         takenAt: new Date().toISOString(),
       };
       await this.storage.setSuspendedSnapshot(sessionId, snapshot);
@@ -688,6 +711,11 @@ export class SessionManager {
         await this.storage.clearSlot(sessionId, slotId);
         sse.send({ type: "slot_cleared", slotId });
       }
+      // Drop the live change log too — the user is editing the contract
+      // and the suspended snapshot already captured what we'd want to
+      // restore. If the contract is unchanged on re-validate, the log
+      // will be restored along with the slots.
+      await this.storage.clearChangeLog(sessionId);
 
       const next: SessionLifecycle = { kind: "phase1" };
       const updated = await this.storage.setState(sessionId, next);

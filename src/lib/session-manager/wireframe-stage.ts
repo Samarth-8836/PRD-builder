@@ -1,3 +1,7 @@
+import {
+  changeLogWindowFor,
+  ensureChangeLogCompressed,
+} from "@/lib/context";
 import { PipelineEngine } from "@/lib/pipeline";
 import {
   PRD_PIPELINE,
@@ -52,6 +56,9 @@ export async function runWireframeStage(
   });
 
   try {
+    const compressedSession = await ensureChangeLogCompressed(sessionId);
+    const changeHistory = changeLogWindowFor(compressedSession);
+
     // Step 1: wireframeData
     sse.send({
       type: "progress",
@@ -62,8 +69,9 @@ export async function runWireframeStage(
     const dataOut = await engine.runStep({
       stepId: PRD_STEP_IDS.wireframeData,
       sessionId,
-      inputs: session.slots,
-      priorOutputs: session.regenContext,
+      inputs: compressedSession.slots,
+      priorOutputs: compressedSession.regenContext,
+      changeHistory,
       signal,
     });
     const dataPayload = requireJson(dataOut, PRD_SLOT_IDS.wireframeData);
@@ -109,8 +117,9 @@ export async function runWireframeStage(
     const htmlOut = await engine.runStep({
       stepId: PRD_STEP_IDS.wireframeHtml,
       sessionId,
-      inputs: { ...session.slots, ...dataOut },
-      priorOutputs: session.regenContext,
+      inputs: { ...compressedSession.slots, ...dataOut },
+      priorOutputs: compressedSession.regenContext,
+      changeHistory,
       signal,
       onProgress: (event) => {
         if (event.kind === "substep") {

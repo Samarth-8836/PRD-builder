@@ -53,6 +53,12 @@ import {
   WIREFRAME_SHELL_CORRECTIVE_HINT,
   WIREFRAME_SHELL_SYSTEM,
 } from "./wireframe";
+import {
+  SUMMARIZE_CHANGELOG_WINDOW_CORRECTIVE_HINT,
+  SUMMARIZE_CHANGELOG_WINDOW_SYSTEM,
+  SUMMARIZE_CHAT_WINDOW_CORRECTIVE_HINT,
+  SUMMARIZE_CHAT_WINDOW_SYSTEM,
+} from "./summarize";
 
 export type PromptSlug =
   | "phase1.first_message"
@@ -68,7 +74,9 @@ export type PromptSlug =
   | "phase2.drift_check"
   | "phase2.dummy_data"
   | "phase2.wireframe_shell"
-  | "phase2.screen_html";
+  | "phase2.screen_html"
+  | "summarize.chat_window"
+  | "summarize.changelog_window";
 
 export interface PromptSpec {
   system: string;
@@ -185,6 +193,14 @@ const REGISTRY: Record<PromptSlug, PromptSpec> = {
   "phase2.screen_html": {
     system: SCREEN_HTML_SYSTEM,
     correctiveHint: SCREEN_HTML_CORRECTIVE_HINT,
+  },
+  "summarize.chat_window": {
+    system: SUMMARIZE_CHAT_WINDOW_SYSTEM,
+    correctiveHint: SUMMARIZE_CHAT_WINDOW_CORRECTIVE_HINT,
+  },
+  "summarize.changelog_window": {
+    system: SUMMARIZE_CHANGELOG_WINDOW_SYSTEM,
+    correctiveHint: SUMMARIZE_CHANGELOG_WINDOW_CORRECTIVE_HINT,
   },
 };
 

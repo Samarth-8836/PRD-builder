@@ -1,3 +1,7 @@
+import {
+  changeLogWindowFor,
+  ensureChangeLogCompressed,
+} from "@/lib/context";
 import { PipelineEngine } from "@/lib/pipeline";
 import {
   PRD_PIPELINE,
@@ -61,6 +65,9 @@ export async function runScreenStage(
   });
 
   try {
+    const compressedSession = await ensureChangeLogCompressed(sessionId);
+    const changeHistory = changeLogWindowFor(compressedSession);
+
     sse.send({
       type: "progress",
       op: "phase2.screen_extract",
@@ -71,8 +78,9 @@ export async function runScreenStage(
     const out = await engine.runStep({
       stepId: PRD_STEP_IDS.screen,
       sessionId,
-      inputs: session.slots,
-      priorOutputs: session.regenContext,
+      inputs: compressedSession.slots,
+      priorOutputs: compressedSession.regenContext,
+      changeHistory,
       feedback,
       signal,
       onProgress: (event) => {

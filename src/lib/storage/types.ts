@@ -18,7 +18,11 @@
  */
 
 import type { SessionLifecycle } from "@/lib/pipeline/state";
-import type { DocSlotId, SlotPayload } from "@/lib/pipeline/types";
+import type {
+  ChangeLogEntry,
+  DocSlotId,
+  SlotPayload,
+} from "@/lib/pipeline/types";
 
 export type ChatRole = "user" | "assistant" | "system";
 
@@ -50,6 +54,19 @@ export interface Session {
    *  Cleared per-key on the next successful `setSlot` for that key. */
   regenContext?: Record<string, SlotPayload>;
   chat: ChatMessage[];
+  /** Rolling summary of chat messages that have aged out of the verbatim
+   *  window (see `src/lib/context/window.ts`). Always-loaded into LLM
+   *  prompts that consume chat history (Phase 1 conversation, Phase 2
+   *  classifier) so long-running sessions retain coherent context. */
+  chatSummary?: string;
+  /** Confirmed Phase-2 change requests, append-only. Surfaced to step
+   *  builders as `<change_history>` so regenerated artifacts retain the
+   *  rationale for prior user-driven customizations. Cleared on rollback
+   *  to phase1. */
+  changeLog?: ChangeLogEntry[];
+  /** Rolling summary of changeLog entries that have aged out of the
+   *  verbatim window. Same lifecycle as `changeLog` (cleared on rollback). */
+  changeLogSummary?: string;
   /** Snapshot saved when the user rolls back from a Phase 2 review back to
    *  Phase 1. Restored if the user re-validates with an unchanged contract. */
   suspended?: SuspendedSnapshot;
@@ -71,6 +88,11 @@ export interface SuspendedSnapshot {
   /** Drift-anchor slot's content at rollback time. Used by the equivalence
    *  check to decide whether to restore vs. regenerate. */
   anchorAtRollback: string;
+  /** ChangeLog at rollback. Restored as part of the Phase-2 work if the
+   *  contract is byte-identical on re-validate. */
+  changeLog?: ChangeLogEntry[];
+  /** Rolling summary of out-of-window changeLog entries at rollback. */
+  changeLogSummary?: string;
   takenAt: string;
 }
 
@@ -106,6 +128,23 @@ export interface IStorage {
   ): Promise<Session>;
   /** Drop the entire regen context (e.g., on rollback to phase1). */
   clearRegenContext(id: string): Promise<Session>;
+  /** Replace the chat history with the trimmed window plus a rolling
+   *  summary of older messages that aged out. */
+  setChatWindow(
+    id: string,
+    summary: string,
+    chat: ChatMessage[]
+  ): Promise<Session>;
+  /** Append one ChangeLogEntry to the session. */
+  appendChangeLog(id: string, entry: ChangeLogEntry): Promise<Session>;
+  /** Replace the change log with the trimmed window plus a rolling summary. */
+  setChangeLogWindow(
+    id: string,
+    summary: string,
+    changeLog: ChangeLogEntry[]
+  ): Promise<Session>;
+  /** Drop the entire changeLog + changeLogSummary (e.g., on rollback). */
+  clearChangeLog(id: string): Promise<Session>;
   setState(id: string, state: SessionLifecycle): Promise<Session>;
   setSuspendedSnapshot(
     id: string,

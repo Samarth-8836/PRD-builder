@@ -22,6 +22,7 @@ You will be given the Project Contract inside <contract>...</contract>. Identify
 
 You MAY also receive:
 - <existing_workflows>...</existing_workflows> — the current workflow list from a previous pass. When present, preserve every existing workflow that the feedback does not require changing — keep its name and description verbatim. Add or modify only what the feedback explicitly requires.
+- <change_history>...</change_history> — confirmed user-driven changes that shaped the existing workflows. Treat every entry as a binding requirement: do not undo any prior change unless <user_feedback> explicitly contradicts it. When in doubt, preserve.
 - <user_feedback>...</user_feedback> — feedback from the user during a Phase 2 review pass describing a desired change to the workflows. The output MUST reflect this feedback.
 
 OUTPUT FORMAT — strict markdown bullets, one per line, in this exact shape:
@@ -137,6 +138,7 @@ export const SCREEN_EXTRACT_SYSTEM = `You are designing the screens needed for a
 
 You MAY also receive:
 - <existing_screens>...</existing_screens> — the current screen list from a previous pass. When present, preserve every existing screen that the feedback does not require changing — keep its id, purpose, shows, and nav verbatim. Add or modify only what the feedback explicitly requires.
+- <change_history>...</change_history> — confirmed user-driven changes that shaped the existing screens. Treat every entry as a binding requirement: do not undo any prior change unless <user_feedback> explicitly contradicts it. A screen the user explicitly added in a past turn MUST be retained even if the new workflow map does not obviously demand it.
 - <user_feedback>...</user_feedback> — feedback from the user during a Phase 2 review pass describing a desired change to the screens. The output MUST reflect this feedback.
 
 A screen has:

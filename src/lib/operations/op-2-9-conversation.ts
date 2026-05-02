@@ -1,3 +1,4 @@
+import { ensureChatCompressed } from "@/lib/context";
 import { getPrompt } from "@/lib/prompts";
 import {
   parsePhase2Conversation,
@@ -27,9 +28,12 @@ interface RunInput {
 export async function runPhase2Conversation(
   input: RunInput
 ): Promise<Phase2Conversation> {
-  const { session, userMessage, signal } = input;
+  const { session: rawSession, userMessage, signal } = input;
   const prompt = getPrompt("phase2.conversation");
   const fewShot = prompt.fewShot ?? [];
+
+  // Compress chat to last 100 + rolling summary if needed.
+  const session = await ensureChatCompressed(rawSession.id);
 
   const contract = getMarkdownContent(session.slots, PRD_SLOT_IDS.projectContract) ?? "";
   const workflowMap = getMarkdownContent(session.slots, PRD_SLOT_IDS.workflowMap) ?? "";
@@ -59,12 +63,16 @@ A clickable wireframe has been generated (version ${wireframe.version}). Screen 
 </wireframe_state>`;
   }
 
+  if (session.chatSummary && session.chatSummary.trim().length > 0) {
+    systemWithDocs += `\n\n<earlier_conversation_summary>\n${session.chatSummary.trim()}\n</earlier_conversation_summary>`;
+  }
+
   const messages = [
     ...fewShot.flatMap((ex) => [
       { role: "user" as const, content: ex.user },
       { role: "assistant" as const, content: ex.assistant },
     ]),
-    ...recentChatTurns(session),
+    ...verbatimChatTurns(session),
     { role: "user" as const, content: userMessage },
   ];
 
@@ -79,15 +87,13 @@ A clickable wireframe has been generated (version ${wireframe.version}). Screen 
   return value;
 }
 
-function recentChatTurns(session: Session) {
-  const filtered = session.chat.filter(
-    (m) => m.role === "user" || m.role === "assistant"
-  );
-  // Keep just the last 6 turns (3 user/assistant pairs) — enough for
-  // continuity, small enough to keep the per-call token count down on
-  // free tiers.
-  return filtered.slice(-6).map((m) => ({
-    role: m.role as "user" | "assistant",
-    content: m.content,
-  }));
+function verbatimChatTurns(session: Session) {
+  // The session is already trimmed to the verbatim window by
+  // ensureChatCompressed; we just need to drop system entries.
+  return session.chat
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
 }

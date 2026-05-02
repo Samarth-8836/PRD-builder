@@ -70,6 +70,33 @@ export interface DocSlot {
 // Step configuration
 // ---------------------------------------------------------------------------
 
+/** Append-only record of one confirmed Phase-2 change request. The session
+ *  carries an array of these in `Session.changeLog`. Step builders surface
+ *  recent entries to the LLM as `<change_history>`, so regenerated artifacts
+ *  retain the rationale for prior user-driven customizations. */
+export interface ChangeLogEntry {
+  ts: string;
+  /** The model's longer description of the requested change (full sentence). */
+  description: string;
+  /** The model's past-tense one-liner summary ("Added an X workflow"). */
+  summary: string;
+  /** Step id the change first impacted (e.g. "workflow", "screen"). */
+  firstImpactStepId: string;
+  /** Optional fanout sub-target id (e.g. one screen id within wireframeHtml). */
+  firstImpactItemId?: string;
+}
+
+/** Compressed view of a session's change log: the most recent entries
+ *  verbatim + an optional rolling summary of older entries that were folded
+ *  out of the verbatim window. */
+export interface ChangeHistoryWindow {
+  /** Optional summary text covering changes older than `entries`. Empty
+   *  when the verbatim window has never overflowed. */
+  summary?: string;
+  /** Recent change-log entries kept verbatim for full fidelity. */
+  entries: readonly ChangeLogEntry[];
+}
+
 /** What every runner sees. The engine populates this from session + storage. */
 export interface StepContext {
   sessionId: string;
@@ -92,6 +119,11 @@ export interface StepContext {
    *  customizations across regenerations (e.g., a screen the user added
    *  through a previous cascade should survive a workflow rewind). */
   priorOutputs?: Readonly<Record<string, SlotPayload>>;
+  /** Compressed change history: last-N entries verbatim plus an optional
+   *  rolling summary covering older entries. Step builders render this as
+   *  `<change_history>` so the LLM has a record of *why* current artifact
+   *  state looks the way it does — not just the artifact itself. */
+  changeHistory?: ChangeHistoryWindow;
 }
 
 /** A SingleRunner produces one parsed value from one prompt. */

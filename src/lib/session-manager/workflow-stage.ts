@@ -1,3 +1,7 @@
+import {
+  changeLogWindowFor,
+  ensureChangeLogCompressed,
+} from "@/lib/context";
 import { PipelineEngine } from "@/lib/pipeline";
 import {
   PRD_PIPELINE,
@@ -60,6 +64,11 @@ export async function runWorkflowStage(
   });
 
   try {
+    // Compress change log if it overflowed the verbatim window since
+    // the last call, then resolve the latest session view.
+    const compressedSession = await ensureChangeLogCompressed(sessionId);
+    const changeHistory = changeLogWindowFor(compressedSession);
+
     // Track totals for the legacy "N/M workflows detailed" ticker.
     let detailTotal = 0;
     let detailCompleted = 0;
@@ -75,8 +84,9 @@ export async function runWorkflowStage(
     const out = await engine.runStep({
       stepId: PRD_STEP_IDS.workflow,
       sessionId,
-      inputs: session.slots,
-      priorOutputs: session.regenContext,
+      inputs: compressedSession.slots,
+      priorOutputs: compressedSession.regenContext,
+      changeHistory,
       feedback,
       signal,
       onProgress: (event) => {

@@ -22,6 +22,7 @@ You will be given the Project Contract inside <contract>...</contract> and the S
 
 You MAY also receive:
 - <existing_sample_data>...</existing_sample_data> — the previous sample data from an earlier pass. When present, preserve the existing entity arrays where the underlying entity types still apply (keep ids, content, and field names verbatim). Add or modify only what the new contract / screen inventory / feedback explicitly requires.
+- <change_history>...</change_history> — confirmed user-driven changes to the design so far. Treat every entry as a binding requirement: do not undo any prior change unless <user_feedback> explicitly contradicts it.
 - <user_feedback>...</user_feedback> — feedback from the user during a Phase 2 review pass describing a desired change to the sample data. The output MUST reflect this feedback.
 
 OUTPUT FORMAT — strict JSON, exactly one object. No code fences, no prose, no preamble. The first non-whitespace character MUST be \`{\`.

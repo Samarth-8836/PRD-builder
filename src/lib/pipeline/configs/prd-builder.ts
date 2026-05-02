@@ -41,6 +41,7 @@ import {
   docSlotId,
   phaseId,
   stepId,
+  type ChangeHistoryWindow,
   type PipelineConfig,
   type ReviewChatClassification,
   type SlotPayload,
@@ -99,6 +100,34 @@ ${parsed.value.personas}
 
 ## Entity Map
 ${parsed.value.entityMap}`;
+}
+
+/** Render the change-history block for a step prompt. Returns "" when
+ *  there's nothing to include (initial run). The summary (if present) is
+ *  rendered first so older context comes before recent verbatim entries. */
+function renderChangeHistory(history?: ChangeHistoryWindow): string {
+  if (!history) return "";
+  const hasSummary =
+    history.summary !== undefined && history.summary.trim().length > 0;
+  const hasEntries = history.entries.length > 0;
+  if (!hasSummary && !hasEntries) return "";
+
+  const lines: string[] = [];
+  if (hasSummary) {
+    lines.push(`Summary of older changes: ${history.summary!.trim()}`);
+    if (hasEntries) lines.push("");
+  }
+  if (hasEntries) {
+    lines.push("Recent changes:");
+    for (const e of history.entries) {
+      lines.push(
+        `- ${e.description.trim()} (first impact: ${e.firstImpactStepId}${
+          e.firstImpactItemId ? `:${e.firstImpactItemId}` : ""
+        })`
+      );
+    }
+  }
+  return `\n\n<change_history>\n${lines.join("\n")}\n</change_history>`;
 }
 
 function formatDataShape(data: DummyData): string {
@@ -251,6 +280,7 @@ export const PRD_PIPELINE: PipelineConfig = {
               if (priorWorkflowMap?.kind === "markdown") {
                 block += `\n\n<existing_workflows>\n${priorWorkflowMap.content.trim()}\n</existing_workflows>`;
               }
+              block += renderChangeHistory(ctx.changeHistory);
               if (ctx.feedback) {
                 block += `\n\n<user_feedback>\n${ctx.feedback.trim()}\n</user_feedback>`;
               }
@@ -337,6 +367,7 @@ ${workflowMap.trim()}
               if (priorScreens?.kind === "markdown") {
                 block += `\n\n<existing_screens>\n${priorScreens.content.trim()}\n</existing_screens>`;
               }
+              block += renderChangeHistory(ctx.changeHistory);
               if (ctx.feedback) {
                 block += `\n\n<user_feedback>\n${ctx.feedback.trim()}\n</user_feedback>`;
               }
@@ -446,6 +477,7 @@ ${screenInventory.trim()}
           if (priorData?.kind === "json") {
             block += `\n\n<existing_sample_data>\n${JSON.stringify(priorData.data, null, 2)}\n</existing_sample_data>`;
           }
+          block += renderChangeHistory(ctx.changeHistory);
           if (ctx.feedback) {
             block += `\n\n<user_feedback>\n${ctx.feedback.trim()}\n</user_feedback>`;
           }

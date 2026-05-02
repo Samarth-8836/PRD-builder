@@ -1,6 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { DocSlotId, SlotPayload } from "@/lib/pipeline/types";
+import type {
+  ChangeLogEntry,
+  DocSlotId,
+  SlotPayload,
+} from "@/lib/pipeline/types";
 import type { SessionLifecycle } from "@/lib/pipeline/state";
 import {
   type ChatMessage,
@@ -184,6 +188,55 @@ export class FileStorage implements IStorage {
     const session = await this.requireSession(id);
     if (session.regenContext) {
       delete session.regenContext;
+      session.updatedAt = new Date().toISOString();
+      await this.writeSession(session);
+    }
+    return session;
+  }
+
+  async setChatWindow(
+    id: string,
+    summary: string,
+    chat: ChatMessage[]
+  ): Promise<Session> {
+    const session = await this.requireSession(id);
+    session.chatSummary = summary;
+    session.chat = chat;
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
+  async appendChangeLog(
+    id: string,
+    entry: ChangeLogEntry
+  ): Promise<Session> {
+    const session = await this.requireSession(id);
+    if (!session.changeLog) session.changeLog = [];
+    session.changeLog.push(entry);
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
+  async setChangeLogWindow(
+    id: string,
+    summary: string,
+    changeLog: ChangeLogEntry[]
+  ): Promise<Session> {
+    const session = await this.requireSession(id);
+    session.changeLogSummary = summary;
+    session.changeLog = changeLog;
+    session.updatedAt = new Date().toISOString();
+    await this.writeSession(session);
+    return session;
+  }
+
+  async clearChangeLog(id: string): Promise<Session> {
+    const session = await this.requireSession(id);
+    if (session.changeLog || session.changeLogSummary) {
+      delete session.changeLog;
+      delete session.changeLogSummary;
       session.updatedAt = new Date().toISOString();
       await this.writeSession(session);
     }

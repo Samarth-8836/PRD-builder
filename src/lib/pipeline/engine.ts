@@ -11,6 +11,7 @@
 
 import type { SessionLifecycle } from "./state";
 import type {
+  ChangeHistoryWindow,
   DocSlotId,
   PipelineConfig,
   SlotPayload,
@@ -192,6 +193,7 @@ export class PipelineEngine {
       target: args.target ?? args.onlyItemId,
       priorResults: args.priorResults,
       priorOutputs: args.priorOutputs,
+      changeHistory: args.changeHistory,
     };
 
     const { runSingle, runFanout, runCompose } = await import(
@@ -320,6 +322,10 @@ export interface RunStepArgs {
    *  dispatcher before clearing. Forwarded to `StepContext.priorOutputs`
    *  so step builders can preserve user-driven customizations. */
   priorOutputs?: Readonly<Record<string, SlotPayload>>;
+  /** Compressed view of the session's confirmed Phase-2 changes. Forwarded
+   *  to `StepContext.changeHistory` so step builders can include
+   *  `<change_history>` in the prompt. */
+  changeHistory?: ChangeHistoryWindow;
 }
 
 function remapToProducedSlots(
