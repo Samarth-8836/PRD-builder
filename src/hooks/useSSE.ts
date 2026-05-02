@@ -1,9 +1,42 @@
 "use client";
 
+import {
+  PRD_PIPELINE,
+  PRD_STEP_IDS,
+} from "@/lib/pipeline/configs/prd-builder";
+import type { SessionLifecycle } from "@/lib/pipeline/state";
 import type { StreamEvent } from "@/lib/streaming";
 import { useChatStore } from "@/stores/chat";
 import { useDocumentStore } from "@/stores/document";
 import { useSessionStore } from "@/stores/session";
+
+/** Step id -> the slot id that step's review tab should display.
+ *  Used to keep the active document tab in sync with the lifecycle so
+ *  the user is always looking at the artifact relevant to their current
+ *  approve gate (especially after a restore-from-suspended, where every
+ *  slot's `setSlot` would otherwise leave the tab pinned to whichever
+ *  slot was set last). */
+const STEP_TAB_SLOT: Record<string, string> = Object.fromEntries(
+  PRD_PIPELINE.steps.map((s) => [String(s.id), String(s.produces[0])] as const)
+);
+
+/** Switch the active tab to match the lifecycle state, when the tab's
+ *  slot is finalized on the client. No-op if the slot isn't ready or
+ *  the lifecycle doesn't map to a tab (phase1 / phase1_complete / running). */
+function syncActiveTabToState(state: SessionLifecycle): void {
+  let slotId: string | undefined;
+  if (state.kind === "review") {
+    slotId = STEP_TAB_SLOT[String(state.stepId)];
+  } else if (state.kind === "complete") {
+    // At complete, show the final artifact.
+    slotId = STEP_TAB_SLOT[String(PRD_STEP_IDS.wireframeHtml)];
+  }
+  if (!slotId) return;
+  const doc = useDocumentStore.getState();
+  if (doc.slots[slotId]?.finalized) {
+    doc.setActiveTab(slotId);
+  }
+}
 
 interface SendMessageInput {
   message: string;
@@ -214,6 +247,7 @@ function dispatch(event: StreamEvent): void {
         state: event.state,
         updatedAt: new Date().toISOString(),
       });
+      syncActiveTabToState(event.state);
       return;
     case "chunk":
       chat.appendChunk(event.text);
@@ -250,6 +284,12 @@ function dispatch(event: StreamEvent): void {
           updatedAt: new Date().toISOString(),
         });
       }
+      // Each lifecycle transition repoints the visible tab to the
+      // step's produced slot. Without this, restore-from-suspended
+      // leaves the tab on the last setSlot target (typically
+      // wireframeFiles), making it look like the user fast-forwarded
+      // when really the lifecycle is at review:workflow.
+      syncActiveTabToState(event.state);
       return;
     case "validation_result": {
       const text = formatValidationResult(event);
@@ -322,9 +362,17 @@ export async function loadSession(id: string): Promise<void> {
   for (const [slotId, payload] of Object.entries(s.slots)) {
     doc.setSlot(slotId, payload);
   }
-  // setSlot auto-switches the tab on first finalize. Restore to the
-  // first known slot id (drift anchor by convention) for a predictable
-  // landing on session load.
-  const anchor = Object.keys(s.slots)[0];
-  if (anchor) doc.setActiveTab(anchor);
+  // Tab follows lifecycle on session load: pick the slot relevant to
+  // the current state (review:X -> X's slot, complete -> wireframe).
+  // Falls back to the drift anchor for phase1 / phase1_complete /
+  // running states where there's no obvious "current" tab.
+  syncActiveTabToState(s.state);
+  if (
+    s.state.kind === "phase1" ||
+    s.state.kind === "phase1_complete" ||
+    s.state.kind === "running"
+  ) {
+    const anchor = Object.keys(s.slots)[0];
+    if (anchor) doc.setActiveTab(anchor);
+  }
 }
