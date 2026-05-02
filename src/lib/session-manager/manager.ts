@@ -538,26 +538,27 @@ export class SessionManager {
     }
     await this.storage.setSuspendedSnapshot(session.id, null);
 
-    // Land where the user was when they rolled back:
-    //   - review:X snapshot -> review:workflow (walk forward, M9 fix)
-    //   - complete snapshot -> complete (the lock is intact, restore in place)
-    // For complete-snapshot restore, no walk-through is needed because
-    // the user wasn't iterating; they just exited and came back.
-    const wasComplete = snapshot.state.kind === "complete";
-    const finalState: SessionLifecycle = wasComplete
-      ? { kind: "complete" }
-      : { kind: "review", stepId: PRD_STEP_IDS.workflow };
+    // Always land at the workflow review (the first review state)
+    // regardless of which lifecycle the snapshot was taken from. Whether
+    // the user rolled back from review:* or from complete, the reason
+    // they rolled back was to revisit; walking each gate gives them a
+    // chance to change something at any stage. approve() skips stages
+    // whose outputs are already populated, so the walk is cheap (no LLM
+    // calls) when nothing actually needs to change.
+    const finalState: SessionLifecycle = {
+      kind: "review",
+      stepId: PRD_STEP_IDS.workflow,
+    };
     await this.storage.setState(session.id, finalState);
     sse.send({ type: "state", state: finalState });
     sse.send({
       type: "progress",
       op: "phase2.restore",
       status: "completed",
-      note: wasComplete
-        ? "Restored your locked pipeline — the contract is unchanged."
-        : "Restored your previous Phase 2 work — the contract is unchanged. " +
-          "Step through Approve to revisit each stage; make a change at any " +
-          "review to override what's restored.",
+      note:
+        "Restored your previous Phase 2 work — the contract is unchanged. " +
+        "Step through Approve to revisit each stage; make a change at any " +
+        "review to override what's restored.",
     });
   }
 
