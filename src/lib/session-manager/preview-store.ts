@@ -24,7 +24,13 @@ import type { CascadePreview } from "@/lib/pipeline";
 
 export interface PendingPreview {
   preview: CascadePreview;
+  /** The model's longer description of the change (used as cascade
+   *  feedback into the regenerating step). */
   description: string;
+  /** The model's short past-tense summary ("Added X"). Persisted to chat
+   *  history when the user confirms — never if they cancel or drift
+   *  blocks. */
+  summary: string;
   expiresAt: number;
 }
 
@@ -34,11 +40,13 @@ const store = new Map<string, PendingPreview>();
 export function setPendingPreview(
   sessionId: string,
   preview: CascadePreview,
-  description: string
+  description: string,
+  summary: string
 ): void {
   store.set(sessionId, {
     preview,
     description,
+    summary,
     expiresAt: Date.now() + TTL_MS,
   });
 }

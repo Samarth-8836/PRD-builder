@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
 import { makeSSEResponse } from "@/lib/streaming";
 import {
-  NoPendingPreviewError,
   SessionBusyError,
   WrongPhaseError,
   getSessionManager,
@@ -50,7 +49,6 @@ export async function POST(req: NextRequest) {
       await manager.confirmCascade({ sessionId, sse, signal: req.signal });
     } catch (err: unknown) {
       if (err instanceof SessionBusyError) sse.error(err.message, err.code);
-      else if (err instanceof NoPendingPreviewError) sse.error(err.message, err.code);
       else if (err instanceof WrongPhaseError) sse.error(err.message, err.code);
       else sse.error(err instanceof Error ? err.message : String(err));
     } finally {

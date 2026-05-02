@@ -99,13 +99,6 @@ interface CancelCascadeInput {
   sessionId: string;
 }
 
-export class NoPendingPreviewError extends Error {
-  readonly code = "NO_PENDING_PREVIEW";
-  constructor(public sessionId: string) {
-    super(`No pending cascade preview for session ${sessionId}`);
-  }
-}
-
 /**
  * Top-level coordinator. Routes by lifecycle state:
  *
@@ -295,6 +288,11 @@ export class SessionManager {
       signal,
     });
 
+    // A new chat message supersedes any prior pending plan. Drop it
+    // server-side so a refresh-then-Confirm with a stale plan doesn't
+    // reapply the OLD change.
+    clearPendingPreview(session.id);
+
     if (conv.mode === "question") {
       sse.send({ type: "assistant_message", content: conv.answer });
       await this.storage.appendChat(session.id, {
@@ -305,13 +303,11 @@ export class SessionManager {
       return;
     }
 
-    sse.send({ type: "assistant_message", content: conv.summary });
-    await this.storage.appendChat(session.id, {
-      role: "assistant",
-      content: conv.summary,
-      ts: new Date().toISOString(),
-    });
-
+    // Change mode — drift-check FIRST, before anything that looks like
+    // "I applied this" lands in chat. Drift FLAG/DRIFT and cancelled
+    // previews must leave no false-positive chat record. The
+    // `assistant_message` + `appendChat` for a change happen only after
+    // the user confirms (see confirmCascade below).
     const contract = getMarkdownContent(
       session.slots,
       PRD_SLOT_IDS.projectContract
@@ -330,10 +326,13 @@ export class SessionManager {
       scope: conv.firstImpactStepId,
     });
 
-    if (drift.classification === "DRIFT") return;
-    if (drift.classification === "FLAG") return;
+    if (drift.classification === "DRIFT" || drift.classification === "FLAG") {
+      // The drift banner is the only response — no chat message,
+      // because nothing was applied.
+      return;
+    }
 
-    // COMPATIBLE — emit a cascade preview and stash the plan in-memory.
+    // COMPATIBLE — stash the plan in-memory and emit a preview event.
     // The client renders a Confirm/Cancel banner; the actual cascade
     // runs on a separate /api/cascade/confirm SSE round-trip if confirmed.
     const preview = engine.previewCascade({
@@ -341,10 +340,11 @@ export class SessionManager {
       firstImpactItemId: conv.firstImpactItemId,
       slots: session.slots,
     });
-    setPendingPreview(session.id, preview, conv.description);
+    setPendingPreview(session.id, preview, conv.description, conv.summary);
     sse.send({
       type: "cascade_preview",
       description: conv.description,
+      summary: conv.summary,
       preview,
     });
   }
@@ -357,7 +357,21 @@ export class SessionManager {
     if (this.busy.has(sessionId)) throw new SessionBusyError(sessionId);
 
     const pending = getPendingPreview(sessionId);
-    if (!pending) throw new NoPendingPreviewError(sessionId);
+    if (!pending) {
+      // Idempotent no-op. A refresh-then-Confirm or a confirmation that
+      // arrives after the 5min TTL ends here. Surface a friendly note
+      // rather than a hard error, since the user's reasonable
+      // interpretation is "the change went through" — but it didn't,
+      // so we tell them.
+      sse.send({
+        type: "progress",
+        op: "phase2.cascade",
+        status: "completed",
+        note:
+          "No pending change to confirm. The plan may have expired (5-minute TTL) or been cleared by a reload. Send your change request again.",
+      });
+      return;
+    }
 
     this.busy.add(sessionId);
     try {
@@ -371,6 +385,16 @@ export class SessionManager {
         sessionId: session.id,
         title: session.title,
         state: session.state,
+      });
+
+      // Persist the change summary to chat history NOW (after Confirm).
+      // This is the canonical "change applied" record — it never lands
+      // for cancelled or drift-rejected attempts.
+      sse.send({ type: "assistant_message", content: pending.summary });
+      await this.storage.appendChat(sessionId, {
+        role: "assistant",
+        content: pending.summary,
+        ts: new Date().toISOString(),
       });
 
       // Drop the pending preview before running so a mid-cascade reload

@@ -116,8 +116,15 @@ export class FileStorage implements IStorage {
     const session = await this.requireSession(id);
     const key = String(slotId);
     const existing = session.slots[key];
-    const nextVersion = existing ? existing.version + 1 : 1;
+    const archivedMax = session.slotVersionMax?.[key] ?? 0;
+    // Continue from whichever floor is higher: the live slot's version
+    // (normal case) or the high-water mark left by a prior clearSlot
+    // (cascade-regen case). This prevents version resets on re-creation.
+    const floor = Math.max(existing?.version ?? 0, archivedMax);
+    const nextVersion = floor + 1;
     session.slots[key] = withVersion(payload, nextVersion);
+    if (!session.slotVersionMax) session.slotVersionMax = {};
+    session.slotVersionMax[key] = nextVersion;
     session.updatedAt = new Date().toISOString();
     await this.writeSession(session);
     return session;
@@ -128,7 +135,17 @@ export class FileStorage implements IStorage {
     slotId: DocSlotId | string
   ): Promise<Session> {
     const session = await this.requireSession(id);
-    delete session.slots[String(slotId)];
+    const key = String(slotId);
+    const existing = session.slots[key];
+    if (existing) {
+      // Stash the version so a future setSlot continues from it.
+      if (!session.slotVersionMax) session.slotVersionMax = {};
+      session.slotVersionMax[key] = Math.max(
+        session.slotVersionMax[key] ?? 0,
+        existing.version
+      );
+    }
+    delete session.slots[key];
     session.updatedAt = new Date().toISOString();
     await this.writeSession(session);
     return session;

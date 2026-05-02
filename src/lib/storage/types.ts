@@ -38,6 +38,10 @@ export interface Session {
   /** Opaque slot-keyed payload map. Slot ids are declared by the active
    *  pipeline config (`PipelineConfig.slots`). */
   slots: Record<string, SlotPayload>;
+  /** Per-slot high-water-mark of versions ever assigned. Survives
+   *  `clearSlot`, so a cascade that re-creates a previously-cleared
+   *  slot continues from the prior version (no v1 reset). */
+  slotVersionMax?: Record<string, number>;
   chat: ChatMessage[];
   /** Snapshot saved when the user rolls back from a Phase 2 review back to
    *  Phase 1. Restored if the user re-validates with an unchanged contract. */

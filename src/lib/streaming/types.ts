@@ -53,10 +53,16 @@ export type StreamEvent =
    *  preview is ready. The client renders a banner with Confirm/Cancel.
    *  Confirm POSTs to /api/cascade/confirm to actually run the cascade.
    *  Cancel drops the pending preview server-side. The pending preview
-   *  is in-memory only and expires after 5 minutes. */
+   *  is in-memory only and expires after 5 minutes.
+   *
+   *  `summary` is the past-tense one-liner from the classifier ("Added
+   *  X"). It is NOT persisted to chat at preview time — chat appends
+   *  only after Confirm so cancelled / drift-rejected attempts leave
+   *  no false-positive chat record. */
   | {
       type: "cascade_preview";
       description: string;
+      summary: string;
       preview: CascadePreview;
     }
   | { type: "error"; message: string; code?: string }
