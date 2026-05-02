@@ -1,6 +1,7 @@
 "use client";
 
 import { create } from "zustand";
+import type { CascadePreview } from "@/lib/pipeline";
 import type { SessionLifecycle } from "@/lib/pipeline/state";
 import type { SessionSummary } from "@/lib/storage";
 
@@ -17,20 +18,32 @@ export interface DriftState {
   scope?: string;
 }
 
+export interface PendingPreviewState {
+  description: string;
+  preview: CascadePreview;
+}
+
 interface SessionStore {
   current: CurrentSession | null;
   list: SessionSummary[];
   drift: DriftState | null;
+  /** A cascade is awaiting user Confirm/Cancel. While set, the chat
+   *  textarea is disabled and the preview banner is rendered. Cleared
+   *  when the user confirms (then progress events flow), cancels, or
+   *  rolls back. */
+  pendingPreview: PendingPreviewState | null;
   setCurrent: (s: CurrentSession | null) => void;
   setList: (s: SessionSummary[]) => void;
   upsert: (s: SessionSummary) => void;
   setDrift: (d: DriftState | null) => void;
+  setPendingPreview: (p: PendingPreviewState | null) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set) => ({
   current: null,
   list: [],
   drift: null,
+  pendingPreview: null,
   setCurrent: (current) => set({ current }),
   setList: (list) => set({ list }),
   upsert: (s) =>
@@ -43,4 +56,5 @@ export const useSessionStore = create<SessionStore>((set) => ({
       return { list: next };
     }),
   setDrift: (drift) => set({ drift }),
+  setPendingPreview: (pendingPreview) => set({ pendingPreview }),
 }));

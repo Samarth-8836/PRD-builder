@@ -8,9 +8,15 @@ import {
   runTitle,
   runValidate,
 } from "@/lib/operations";
-import { PRD_SLOT_IDS, PRD_STEP_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { PipelineEngine } from "@/lib/pipeline";
+import {
+  PRD_PIPELINE,
+  PRD_SLOT_IDS,
+  PRD_STEP_IDS,
+} from "@/lib/pipeline/configs/prd-builder";
 import { getMarkdownContent } from "@/lib/pipeline/slots";
 import type { SessionLifecycle } from "@/lib/pipeline/state";
+import type { StepId } from "@/lib/pipeline/types";
 import { type SSEWriter } from "@/lib/streaming";
 import {
   getStorage,
@@ -23,6 +29,13 @@ import { runPhase2Cascade } from "./phase2-cascade";
 import { runScreenStage } from "./screen-stage";
 import { runWireframeStage } from "./wireframe-stage";
 import { runWorkflowStage } from "./workflow-stage";
+import {
+  clearPendingPreview,
+  getPendingPreview,
+  setPendingPreview,
+} from "./preview-store";
+
+const engine = new PipelineEngine(PRD_PIPELINE);
 
 export class SessionBusyError extends Error {
   readonly code = "SESSION_BUSY";
@@ -74,6 +87,23 @@ interface ApproveInput {
   sessionId: string;
   sse: SSEWriter;
   signal?: AbortSignal;
+}
+
+interface ConfirmCascadeInput {
+  sessionId: string;
+  sse: SSEWriter;
+  signal?: AbortSignal;
+}
+
+interface CancelCascadeInput {
+  sessionId: string;
+}
+
+export class NoPendingPreviewError extends Error {
+  readonly code = "NO_PENDING_PREVIEW";
+  constructor(public sessionId: string) {
+    super(`No pending cascade preview for session ${sessionId}`);
+  }
 }
 
 /**
@@ -303,15 +333,67 @@ export class SessionManager {
     if (drift.classification === "DRIFT") return;
     if (drift.classification === "FLAG") return;
 
-    await runPhase2Cascade({
-      session,
-      sse,
-      signal,
-      firstImpactStepId: conv.firstImpactStepId,
+    // COMPATIBLE — emit a cascade preview and stash the plan in-memory.
+    // The client renders a Confirm/Cancel banner; the actual cascade
+    // runs on a separate /api/cascade/confirm SSE round-trip if confirmed.
+    const preview = engine.previewCascade({
+      firstImpactStepId: conv.firstImpactStepId as StepId,
       firstImpactItemId: conv.firstImpactItemId,
-      description: conv.description,
-      state: session.state,
+      slots: session.slots,
     });
+    setPendingPreview(session.id, preview, conv.description);
+    sse.send({
+      type: "cascade_preview",
+      description: conv.description,
+      preview,
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Cascade preview confirmation
+  // ---------------------------------------------------------------------
+  async confirmCascade(input: ConfirmCascadeInput): Promise<void> {
+    const { sessionId, sse, signal } = input;
+    if (this.busy.has(sessionId)) throw new SessionBusyError(sessionId);
+
+    const pending = getPendingPreview(sessionId);
+    if (!pending) throw new NoPendingPreviewError(sessionId);
+
+    this.busy.add(sessionId);
+    try {
+      const session = await this.storage.getSession(sessionId);
+      if (!session) {
+        sse.error(`Session ${sessionId} not found`, "NOT_FOUND");
+        return;
+      }
+      sse.send({
+        type: "meta",
+        sessionId: session.id,
+        title: session.title,
+        state: session.state,
+      });
+
+      // Drop the pending preview before running so a mid-cascade reload
+      // doesn't see a stale plan. The cascade itself drives state via
+      // its own progress events.
+      clearPendingPreview(sessionId);
+
+      await runPhase2Cascade({
+        session,
+        sse,
+        signal,
+        firstImpactStepId: pending.preview.firstImpactStepId,
+        firstImpactItemId: pending.preview.firstImpactItemId,
+        description: pending.description,
+        state: session.state,
+      });
+    } finally {
+      this.busy.delete(sessionId);
+    }
+  }
+
+  cancelCascade(input: CancelCascadeInput): void {
+    clearPendingPreview(input.sessionId);
   }
 
   // ---------------------------------------------------------------------
@@ -550,6 +632,10 @@ export class SessionManager {
           `Cannot roll back from ${session.state.kind}; rollback is only available from a review state`
         );
       }
+
+      // Drop any stale pending cascade preview — the user is taking a
+      // different path now, the in-memory plan is no longer valid.
+      clearPendingPreview(sessionId);
 
       // Snapshot every slot except the drift anchor (contract). The user
       // is about to edit the contract; the rest of the artifacts are what

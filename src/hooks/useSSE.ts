@@ -19,9 +19,11 @@ export async function sendChatMessage(input: SendMessageInput): Promise<void> {
     chat.reset();
     doc.reset();
   }
-  // Each new message clears any previous drift state — the user's about
-  // to issue something new, the prior banner is no longer the latest signal.
+  // Each new message clears any previous drift / preview state — the
+  // user's about to issue something new, the prior banner is no longer
+  // the latest signal.
   session.setDrift(null);
+  session.setPendingPreview(null);
   chat.appendUser(input.message);
   chat.setPendingAssistant("");
   chat.setStreaming(true);
@@ -89,6 +91,43 @@ export async function approve(sessionId: string): Promise<void> {
   }
 }
 
+export async function confirmCascade(sessionId: string): Promise<void> {
+  const chat = useChatStore.getState();
+  // Drop the pending preview banner immediately — the server is about to
+  // start streaming progress events, and the banner is no longer the
+  // active "what should I do next" prompt.
+  useSessionStore.getState().setPendingPreview(null);
+  chat.setStreaming(true);
+  try {
+    const response = await fetch("/api/cascade/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, action: "confirm" }),
+    });
+    if (!response.ok || !response.body) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `Confirm failed (${response.status}): ${detail.slice(0, 200)}`
+      );
+    }
+    await consumeSSE(response.body, dispatch);
+  } finally {
+    useChatStore.getState().setStreaming(false);
+  }
+}
+
+export async function cancelCascade(sessionId: string): Promise<void> {
+  // Server side is fire-and-forget (204). Drop the local banner first so
+  // the UI feels instant; if the network call fails the worst case is
+  // the server keeps the plan in-memory until its TTL.
+  useSessionStore.getState().setPendingPreview(null);
+  await fetch("/api/cascade/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, action: "cancel" }),
+  });
+}
+
 export async function rollbackToPhase1(sessionId: string): Promise<void> {
   const chat = useChatStore.getState();
   chat.setStreaming(true);
@@ -112,6 +151,7 @@ export async function rollbackToPhase1(sessionId: string): Promise<void> {
     useDocumentStore.getState().reset();
     if (sessId) await loadSession(sessId);
     useSessionStore.getState().setDrift(null);
+    useSessionStore.getState().setPendingPreview(null);
   } finally {
     useChatStore.getState().setStreaming(false);
   }
@@ -220,6 +260,12 @@ function dispatch(event: StreamEvent): void {
         scope: event.scope,
       });
       return;
+    case "cascade_preview":
+      session.setPendingPreview({
+        description: event.description,
+        preview: event.preview,
+      });
+      return;
     case "error":
       chat.appendSystem(`Error: ${event.message}`);
       return;
@@ -263,6 +309,7 @@ export async function loadSession(id: string): Promise<void> {
     state: s.state,
   });
   useSessionStore.getState().setDrift(null);
+  useSessionStore.getState().setPendingPreview(null);
   useChatStore.getState().setMessages(s.chat);
 
   const doc = useDocumentStore.getState();

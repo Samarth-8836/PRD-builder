@@ -1,3 +1,4 @@
+import type { CascadePreview } from "@/lib/pipeline";
 import type { SessionLifecycle } from "@/lib/pipeline/state";
 import type { SlotPayload } from "@/lib/pipeline/types";
 
@@ -47,6 +48,16 @@ export type StreamEvent =
       driftType?: string;
       reason: string;
       scope?: string;
+    }
+  /** A change request has been classified COMPATIBLE and a cascade
+   *  preview is ready. The client renders a banner with Confirm/Cancel.
+   *  Confirm POSTs to /api/cascade/confirm to actually run the cascade.
+   *  Cancel drops the pending preview server-side. The pending preview
+   *  is in-memory only and expires after 5 minutes. */
+  | {
+      type: "cascade_preview";
+      description: string;
+      preview: CascadePreview;
     }
   | { type: "error"; message: string; code?: string }
   | { type: "complete" };

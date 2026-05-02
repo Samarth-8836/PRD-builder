@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { CascadePreviewBanner } from "./CascadePreviewBanner";
 import { DriftBanner } from "./DriftBanner";
 import { rollbackToPhase1, sendChatMessage } from "@/hooks/useSSE";
 import { PRD_PIPELINE } from "@/lib/pipeline/configs/prd-builder";
@@ -19,6 +20,7 @@ export function ChatPanel() {
   const streaming = useChatStore((s) => s.streaming);
   const current = useSessionStore((s) => s.current);
   const drift = useSessionStore((s) => s.drift);
+  const pendingPreview = useSessionStore((s) => s.pendingPreview);
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -31,13 +33,14 @@ export function ChatPanel() {
 
   const state = current?.state;
   const blocked = drift?.classification === "DRIFT";
+  const previewPending = Boolean(pendingPreview);
   const inAnyReview = state?.kind === "review";
   const isComplete = state?.kind === "complete";
   const canRollback = inAnyReview;
 
   async function submit() {
     const trimmed = input.trim();
-    if (!trimmed || streaming || blocked) return;
+    if (!trimmed || streaming || blocked || previewPending) return;
     setInput("");
     try {
       await sendChatMessage({ message: trimmed, sessionId: current?.id });
@@ -68,12 +71,14 @@ export function ChatPanel() {
 
   const showPlaceholder = messages.length === 0 && !streaming && !pendingAssistant;
   const showThinking = streaming && !pendingAssistant;
-  const placeholder = computePlaceholder({
-    blocked,
-    isComplete,
-    state,
-    hasSession: Boolean(current),
-  });
+  const placeholder = previewPending
+    ? "Confirm or cancel the pending change above to continue."
+    : computePlaceholder({
+        blocked,
+        isComplete,
+        state,
+        hasSession: Boolean(current),
+      });
 
   return (
     <div className="flex h-full flex-col">
@@ -107,10 +112,13 @@ export function ChatPanel() {
           </ul>
         )}
       </div>
-      {drift && drift.classification !== "COMPATIBLE" && (
+      {drift && drift.classification !== "COMPATIBLE" && !previewPending && (
         <div className="border-t border-neutral-800">
           <DriftBanner drift={drift} />
         </div>
+      )}
+      {pendingPreview && (
+        <CascadePreviewBanner pending={pendingPreview} />
       )}
       <div className="border-t border-neutral-800 p-3">
         <textarea
@@ -120,7 +128,7 @@ export function ChatPanel() {
           rows={2}
           placeholder={placeholder}
           className="w-full resize-none rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={streaming || blocked || isComplete}
+          disabled={streaming || blocked || isComplete || previewPending}
         />
         <div className="mt-2 flex justify-between gap-2">
           {canRollback && !blocked ? (
@@ -136,7 +144,7 @@ export function ChatPanel() {
           )}
           <button
             onClick={() => void submit()}
-            disabled={streaming || blocked || isComplete || !input.trim()}
+            disabled={streaming || blocked || isComplete || previewPending || !input.trim()}
             className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
           >
             Send
