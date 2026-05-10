@@ -1,28 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { HistoryPanel } from "./HistoryPanel";
 import { Markdown } from "./Markdown";
 import { PhaseIndicator } from "./PhaseIndicator";
 import { WireframeViewer } from "./WireframeViewer";
 import { approve, validatePhase1 } from "@/hooks/useSSE";
-import { PRD_PIPELINE, PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { tryGetPipeline } from "@/lib/pipeline/configs";
 import type { DocSlot, StepConfig } from "@/lib/pipeline/types";
 import { useChatStore } from "@/stores/chat";
 import { useDocumentStore } from "@/stores/document";
 import { useSessionStore } from "@/stores/session";
-
-const CONFIG = PRD_PIPELINE;
-
-/** Slots eligible to render as a tab. JSON slots are internal-only — they
- *  feed the wireframe but don't have their own viewer. */
-const VISIBLE_SLOTS: readonly DocSlot[] = CONFIG.slots.filter(
-  (s) => s.kind !== "json"
-);
-
-const STEP_INDEX: ReadonlyMap<string, StepConfig> = new Map(
-  CONFIG.steps.map((s) => [String(s.id), s] as const)
-);
 
 export function DocumentPanel() {
   const slots = useDocumentStore((s) => s.slots);
@@ -32,16 +20,36 @@ export function DocumentPanel() {
   const streaming = useChatStore((s) => s.streaming);
   const [historyOpen, setHistoryOpen] = useState(false);
 
+  const pipeline = tryGetPipeline(current?.pipelineId);
+  const visibleSlots: readonly DocSlot[] = useMemo(
+    () => (pipeline ? pipeline.slots.filter((s) => s.kind !== "json") : []),
+    [pipeline]
+  );
+  const stepIndex: ReadonlyMap<string, StepConfig> = useMemo(
+    () =>
+      new Map(
+        (pipeline?.steps ?? []).map((s) => [String(s.id), s] as const)
+      ),
+    [pipeline]
+  );
+
   const state = current?.state;
-  const contractClient = slots[PRD_SLOT_IDS.projectContract];
-  const hasContract = Boolean(contractClient?.payload.kind === "markdown" &&
-    contractClient.payload.content.length > 0);
+  const interactiveSlotId = pipeline
+    ? String(pipeline.ui?.interactiveSlot ?? pipeline.driftAnchor)
+    : null;
+  const interactiveClient = interactiveSlotId
+    ? slots[interactiveSlotId]
+    : undefined;
+  const hasInteractive = Boolean(
+    interactiveClient?.payload.kind === "markdown" &&
+      interactiveClient.payload.content.length > 0
+  );
 
   const showDoneButton =
-    hasContract && state?.kind === "phase1" && contractClient?.finalized;
+    hasInteractive && state?.kind === "phase1" && interactiveClient?.finalized;
 
   const reviewStep =
-    state?.kind === "review" ? STEP_INDEX.get(String(state.stepId)) : undefined;
+    state?.kind === "review" ? stepIndex.get(String(state.stepId)) : undefined;
   const reviewStepProduceSlot = reviewStep?.produces[0];
   const reviewSlotPopulated = reviewStepProduceSlot
     ? Boolean(slots[String(reviewStepProduceSlot)]?.finalized)
@@ -50,9 +58,18 @@ export function DocumentPanel() {
     state?.kind === "review" && reviewSlotPopulated && Boolean(reviewStep);
   const approveLabel = reviewStep?.approveLabel ?? "Approve";
 
-  const wireframeReady = Boolean(slots[PRD_SLOT_IDS.wireframeFiles]?.finalized);
+  // The terminal-step slot id (for the "Export" gate). For PRD that's the
+  // wireframe fileset; for research-report it's the final report markdown.
+  const terminalSlotId = pipeline
+    ? String(
+        pipeline.steps[pipeline.steps.length - 1]?.produces[0] ?? ""
+      )
+    : "";
+  const terminalReady = terminalSlotId
+    ? Boolean(slots[terminalSlotId]?.finalized)
+    : false;
   const showExport =
-    current && (wireframeReady || state?.kind === "complete");
+    current && (terminalReady || state?.kind === "complete");
 
   async function handleDone() {
     if (!current) return;
@@ -79,9 +96,9 @@ export function DocumentPanel() {
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-neutral-800 px-4 py-3">
-        {state && (
+        {state && pipeline && (
           <div className="mb-2">
-            <PhaseIndicator state={state} />
+            <PhaseIndicator state={state} pipeline={pipeline} />
           </div>
         )}
         <div className="flex items-center justify-between gap-3">
@@ -98,7 +115,9 @@ export function DocumentPanel() {
               )}
             </div>
             <div className="truncate text-sm font-semibold text-neutral-200">
-              {current ? current.title : "Project Contract"}
+              {current
+                ? current.title
+                : (pipeline?.slots[0]?.label ?? "Document")}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -139,23 +158,33 @@ export function DocumentPanel() {
             )}
           </div>
         </div>
-        <DocumentTabs activeTab={activeTab} onSelect={setActiveTab} />
+        <DocumentTabs
+          activeTab={activeTab}
+          onSelect={setActiveTab}
+          visibleSlots={visibleSlots}
+        />
       </header>
-      <DocumentBody activeTab={activeTab} />
+      <DocumentBody activeTab={activeTab} visibleSlots={visibleSlots} />
       <HistoryPanel open={historyOpen} onClose={() => setHistoryOpen(false)} />
     </div>
   );
 }
 
-function DocumentBody({ activeTab }: { activeTab: string | null }) {
+function DocumentBody({
+  activeTab,
+  visibleSlots,
+}: {
+  activeTab: string | null;
+  visibleSlots: readonly DocSlot[];
+}) {
   const slots = useDocumentStore((s) => s.slots);
 
-  const slot = activeTab ? VISIBLE_SLOTS.find((s) => String(s.id) === activeTab) : undefined;
+  const slot = activeTab ? visibleSlots.find((s) => String(s.id) === activeTab) : undefined;
   if (!slot) {
     return (
       <div className="flex-1 overflow-y-auto px-6 py-5">
         <div className="text-sm text-neutral-600">
-          {VISIBLE_SLOTS[0]?.emptyMessage ?? "Nothing to display yet."}
+          {visibleSlots[0]?.emptyMessage ?? "Nothing to display yet."}
         </div>
       </div>
     );
@@ -196,12 +225,14 @@ function DocumentBody({ activeTab }: { activeTab: string | null }) {
 function DocumentTabs({
   activeTab,
   onSelect,
+  visibleSlots,
 }: {
   activeTab: string | null;
   onSelect: (id: string | null) => void;
+  visibleSlots: readonly DocSlot[];
 }) {
   const slots = useDocumentStore((s) => s.slots);
-  const visible = VISIBLE_SLOTS.filter((slot) => {
+  const visible = visibleSlots.filter((slot) => {
     const client = slots[String(slot.id)];
     if (!client) return false;
     if (slot.kind === "fileset") return client.finalized;

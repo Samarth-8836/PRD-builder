@@ -35,7 +35,9 @@ interface SessionFile {
 export class FileStorage implements IStorage {
   constructor(private readonly root: string) {}
 
-  async createSession(seed: Pick<Session, "id" | "title">): Promise<Session> {
+  async createSession(
+    seed: Pick<Session, "id" | "title"> & { pipelineId?: string }
+  ): Promise<Session> {
     await fs.mkdir(this.root, { recursive: true });
     const now = new Date().toISOString();
     const session: Session = {
@@ -43,6 +45,7 @@ export class FileStorage implements IStorage {
       title: seed.title,
       createdAt: now,
       updatedAt: now,
+      pipelineId: seed.pipelineId ?? "prd-builder.v1",
       state: { kind: "phase1" },
       pipelineVersion: 1,
       slots: {},
@@ -60,6 +63,12 @@ export class FileStorage implements IStorage {
         throw new Error(
           `Session ${id} was written with file version ${parsed.fileVersion}, expected ${SESSION_FILE_VERSION}. M11 changed the storage shape — clear data/sessions/ to start fresh.`
         );
+      }
+      // Default pipelineId for sessions written before M13 (the field was
+      // added at the multi-pipeline cut). M13 keeps file-version stable
+      // by treating missing pipelineId as the original PRD pipeline.
+      if (!parsed.session.pipelineId) {
+        parsed.session.pipelineId = "prd-builder.v1";
       }
       return parsed.session;
     } catch (err: unknown) {
@@ -88,6 +97,7 @@ export class FileStorage implements IStorage {
         title: session.title,
         updatedAt: session.updatedAt,
         state: session.state,
+        pipelineId: session.pipelineId,
       });
     }
     sessions.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));

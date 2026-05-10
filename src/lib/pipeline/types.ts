@@ -309,6 +309,15 @@ export interface ReviewChatConfig {
     type?: string;
     reason: string;
   }>;
+  /** Optional builder that produces the system-prompt addendum the
+   *  review-chat classifier needs (typically wraps the populated slots in
+   *  pipeline-specific tags so the few-shot examples in
+   *  `prompt` align with the slot tag names the model sees at runtime).
+   *  Receives the populated slots map; returns a string to append to the
+   *  prompt's `system` content. Default: empty string. */
+  buildSystemContext?: (
+    slots: Readonly<Record<string, SlotPayload>>
+  ) => string;
 }
 
 // ---------------------------------------------------------------------------

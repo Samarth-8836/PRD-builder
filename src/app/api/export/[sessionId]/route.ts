@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { PRD_PIPELINE, PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { getPipeline } from "@/lib/pipeline/configs";
 import { getStorage } from "@/lib/storage";
 import { buildZip, type ZipEntry } from "@/lib/zip";
 
@@ -30,15 +30,17 @@ export async function GET(_req: NextRequest, ctx: RouteParams) {
   if (!session) {
     return new Response("Session not found", { status: 404 });
   }
-  const contract = session.slots[PRD_SLOT_IDS.projectContract];
-  if (!contract || contract.kind !== "markdown") {
-    return new Response("Session has no contract to export yet", {
-      status: 409,
-    });
+  const pipeline = getPipeline(session.pipelineId);
+  const anchor = session.slots[pipeline.driftAnchor];
+  if (!anchor || anchor.kind !== "markdown") {
+    return new Response(
+      `Session has no ${pipeline.slots.find((s) => s.id === pipeline.driftAnchor)?.label ?? "anchor"} to export yet`,
+      { status: 409 }
+    );
   }
 
   const entries: ZipEntry[] = [];
-  for (const slot of PRD_PIPELINE.slots) {
+  for (const slot of pipeline.slots) {
     const payload = session.slots[String(slot.id)];
     if (!payload) continue;
     if (payload.kind === "markdown") {
@@ -51,13 +53,13 @@ export async function GET(_req: NextRequest, ctx: RouteParams) {
       // (or using the fileBaseName as a directory hint).
       const folder = slot.fileBaseName?.includes("/")
         ? slot.fileBaseName.split("/")[0]
-        : "wireframe";
+        : String(slot.id);
       for (const [name, content] of Object.entries(payload.files)) {
         entries.push({ path: `${folder}/${name}`, content });
       }
     }
-    // JSON slots are internal — they're already bundled into fileset slots
-    // (e.g., wireframeData → wireframe/data.js) and don't need their own entry.
+    // JSON slots are internal — typically bundled into fileset slots
+    // (e.g., PRD's wireframeData → wireframe/data.js).
   }
 
   const zip = buildZip(entries);
@@ -88,7 +90,7 @@ function slugify(title: string): string {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 50) || "prd-builder"
+      .slice(0, 50) || "export"
   );
 }
 

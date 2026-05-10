@@ -4,7 +4,7 @@ import {
   parsePhase2Conversation,
   type Phase2Conversation,
 } from "@/lib/parsers";
-import { PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { getPipeline } from "@/lib/pipeline/configs";
 import { getMarkdownContent } from "@/lib/pipeline/slots";
 import type { Session } from "@/lib/storage";
 import { execute } from "./executor";
@@ -29,38 +29,26 @@ export async function runPhase2Conversation(
   input: RunInput
 ): Promise<Phase2Conversation> {
   const { session: rawSession, userMessage, signal } = input;
-  const prompt = getPrompt("phase2.conversation");
-  const fewShot = prompt.fewShot ?? [];
 
   // Compress chat to last 100 + rolling summary if needed.
   const session = await ensureChatCompressed(rawSession.id);
+  const pipeline = getPipeline(session.pipelineId);
+  const prompt = getPrompt(pipeline.reviewChat.prompt);
+  const fewShot = prompt.fewShot ?? [];
 
-  const contract = getMarkdownContent(session.slots, PRD_SLOT_IDS.projectContract) ?? "";
-  const workflowMap = getMarkdownContent(session.slots, PRD_SLOT_IDS.workflowMap) ?? "";
-  const screenInventory = getMarkdownContent(session.slots, PRD_SLOT_IDS.screenInventory) ?? "";
-
-  let systemWithDocs = `${prompt.system}
-
-<project_contract>
-${contract.trim()}
-</project_contract>
-
-<workflow_map>
-${workflowMap.trim()}
-</workflow_map>
-
-<screen_inventory>
-${screenInventory.trim()}
-</screen_inventory>`;
-
-  const wireframe = session.slots[PRD_SLOT_IDS.wireframeFiles];
-  if (wireframe && wireframe.kind === "fileset") {
-    const screenIds = Object.keys(wireframe.files)
-      .filter((f) => f.endsWith(".html") && f !== "index.html")
-      .map((f) => f.replace(/\.html$/, ""));
-    systemWithDocs += `\n\n<wireframe_state>
-A clickable wireframe has been generated (version ${wireframe.version}). Screen ids with rendered HTML files: ${screenIds.join(", ")}.
-</wireframe_state>`;
+  let systemWithDocs = prompt.system;
+  if (pipeline.reviewChat.buildSystemContext) {
+    systemWithDocs += pipeline.reviewChat.buildSystemContext(session.slots);
+  } else {
+    // Fallback for pipelines that don't provide a builder: dump every
+    // populated markdown slot in `<{slotId}>` tags. Sufficient for
+    // simple pipelines whose review-chat prompt is permissive.
+    for (const slot of pipeline.slots) {
+      const content = getMarkdownContent(session.slots, slot.id);
+      if (content && content.trim().length > 0) {
+        systemWithDocs += `\n\n<${slot.id}>\n${content.trim()}\n</${slot.id}>`;
+      }
+    }
   }
 
   if (session.chatSummary && session.chatSummary.trim().length > 0) {
@@ -76,11 +64,15 @@ A clickable wireframe has been generated (version ${wireframe.version}). Screen 
     { role: "user" as const, content: userMessage },
   ];
 
+  // Validation allow-list — the registered step ids for this pipeline.
+  // Restricts the parsed firstImpactStep to ones the engine can dispatch.
+  const knownStepIds = pipeline.steps.map((s) => String(s.id));
+
   const { value } = await execute({
     system: systemWithDocs,
     messages,
     correctiveHint: prompt.correctiveHint,
-    parser: parsePhase2Conversation,
+    parser: (text) => parsePhase2Conversation(text, { knownStepIds }),
     signal,
     maxAttempts: 2,
   });

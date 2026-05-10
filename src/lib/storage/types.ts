@@ -38,6 +38,11 @@ export interface Session {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** Pipeline that drives this session. Looked up against the registry in
+   *  `src/lib/pipeline/configs/index.ts`. Set at create-time and never
+   *  updated. Defaults to the PRD pipeline for sessions seeded before the
+   *  picker existed. */
+  pipelineId: string;
   /** Lifecycle state. Replaces the legacy `phase` string union. */
   state: SessionLifecycle;
   /** Monotonically-increasing version of the locked pipeline output.
@@ -118,10 +123,13 @@ export interface SessionSummary {
   title: string;
   updatedAt: string;
   state: SessionLifecycle;
+  pipelineId: string;
 }
 
 export interface IStorage {
-  createSession(seed: Pick<Session, "id" | "title">): Promise<Session>;
+  createSession(
+    seed: Pick<Session, "id" | "title"> & { pipelineId?: string }
+  ): Promise<Session>;
   getSession(id: string): Promise<Session | null>;
   listSessions(): Promise<SessionSummary[]>;
   saveSession(session: Session): Promise<void>;

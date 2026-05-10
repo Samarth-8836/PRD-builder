@@ -10,6 +10,7 @@ interface CurrentSession {
   title: string;
   state: SessionLifecycle;
   pipelineVersion: number;
+  pipelineId: string;
 }
 
 export interface DriftState {
@@ -33,11 +34,18 @@ interface SessionStore {
    *  when the user confirms (then progress events flow), cancels, or
    *  rolls back. */
   pendingPreview: PendingPreviewState | null;
+  /** Pipeline id chosen by the user for the next session creation. Set
+   *  when the user clicks "+ New session" and picks a pipeline; consumed
+   *  by `sendChatMessage` on the first message and forwarded to the
+   *  server's `startSession`. Cleared after the session is created (the
+   *  server's `meta` event sets `current.pipelineId` directly). */
+  draftPipelineId: string | null;
   setCurrent: (s: CurrentSession | null) => void;
   setList: (s: SessionSummary[]) => void;
   upsert: (s: SessionSummary) => void;
   setDrift: (d: DriftState | null) => void;
   setPendingPreview: (p: PendingPreviewState | null) => void;
+  setDraftPipelineId: (id: string | null) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set) => ({
@@ -45,6 +53,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
   list: [],
   drift: null,
   pendingPreview: null,
+  draftPipelineId: null,
   setCurrent: (current) => set({ current }),
   setList: (list) => set({ list }),
   upsert: (s) =>
@@ -58,4 +67,5 @@ export const useSessionStore = create<SessionStore>((set) => ({
     }),
   setDrift: (drift) => set({ drift }),
   setPendingPreview: (pendingPreview) => set({ pendingPreview }),
+  setDraftPipelineId: (draftPipelineId) => set({ draftPipelineId }),
 }));

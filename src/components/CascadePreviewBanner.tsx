@@ -1,18 +1,12 @@
 "use client";
 
+import { useMemo } from "react";
 import { confirmCascade, cancelCascade } from "@/hooks/useSSE";
-import { PRD_PIPELINE } from "@/lib/pipeline/configs/prd-builder";
+import { tryGetPipeline } from "@/lib/pipeline/configs";
 import { describeLifecycle } from "@/lib/pipeline";
 import type { PendingPreviewState } from "@/stores/session";
 import { useChatStore } from "@/stores/chat";
 import { useSessionStore } from "@/stores/session";
-
-const SLOT_LABEL: Record<string, string> = Object.fromEntries(
-  PRD_PIPELINE.slots.map((s) => [String(s.id), s.label] as const)
-);
-const STEP_LABEL: Record<string, string> = Object.fromEntries(
-  PRD_PIPELINE.steps.map((s) => [String(s.id), s.label] as const)
-);
 
 /**
  * Cascade-preview gate. Renders above the chat input whenever there is a
@@ -25,16 +19,33 @@ export function CascadePreviewBanner({
 }: {
   pending: PendingPreviewState;
 }) {
-  const sessionId = useSessionStore((s) => s.current?.id);
+  const session = useSessionStore((s) => s.current);
+  const sessionId = session?.id;
   const streaming = useChatStore((s) => s.streaming);
   const { preview, description } = pending;
 
-  const stepLabel = STEP_LABEL[String(preview.firstImpactStepId)] ?? preview.firstImpactStepId;
+  const pipeline = tryGetPipeline(session?.pipelineId);
+  const slotLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        (pipeline?.slots ?? []).map((s) => [String(s.id), s.label] as const)
+      ) as Record<string, string>,
+    [pipeline]
+  );
+  const stepLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        (pipeline?.steps ?? []).map((s) => [String(s.id), s.label] as const)
+      ) as Record<string, string>,
+    [pipeline]
+  );
+
+  const stepLabel = stepLabels[String(preview.firstImpactStepId)] ?? preview.firstImpactStepId;
   const itemSuffix = preview.firstImpactItemId
     ? ` (${preview.firstImpactItemId})`
     : "";
   const affectedLabels = preview.affectedSlots.map(
-    (id) => SLOT_LABEL[String(id)] ?? String(id)
+    (id) => slotLabels[String(id)] ?? String(id)
   );
   const endsAt = describeLifecycle(preview.endsAt);
 

@@ -1,30 +1,37 @@
 "use client";
 
-import { PRD_PIPELINE } from "@/lib/pipeline/configs/prd-builder";
 import { describeLifecycle } from "@/lib/pipeline";
 import type { SessionLifecycle } from "@/lib/pipeline/state";
-import type { StepConfig } from "@/lib/pipeline/types";
+import type { PipelineConfig, StepConfig } from "@/lib/pipeline/types";
 import { useDocumentStore } from "@/stores/document";
-
-const CONFIG = PRD_PIPELINE;
-/** Steps shown in the chip strip. Steps with `gate: "auto"` are internal
- *  pipeline glue (e.g., wireframeData) and are hidden from the user. */
-const VISIBLE_STEPS: readonly StepConfig[] = CONFIG.steps.filter(
-  (s) => s.gate !== "auto"
-);
 
 type ChipState = "pending" | "active" | "review" | "complete";
 
 interface PhaseIndicatorProps {
   state: SessionLifecycle;
+  pipeline: PipelineConfig;
 }
 
-export function PhaseIndicator({ state }: PhaseIndicatorProps) {
+/** Hand-tuned short labels for PRD's chip strip. Other pipelines fall
+ *  through to step.label (kept short by config convention). */
+const PRD_SHORT_LABELS: Record<string, string> = {
+  workflow: "Workflows",
+  screen: "Screens",
+  wireframeHtml: "Wireframe",
+};
+
+export function PhaseIndicator({ state, pipeline }: PhaseIndicatorProps) {
   const slots = useDocumentStore((s) => s.slots);
 
+  /** Steps shown in the chip strip. Steps with `gate: "auto"` are internal
+   *  pipeline glue (e.g., PRD's wireframeData) and are hidden from the user. */
+  const visibleSteps: readonly StepConfig[] = pipeline.steps.filter(
+    (s) => s.gate !== "auto"
+  );
+
   const phase1State: ChipState = state.kind === "phase1" ? "active" : "complete";
-  const anyStepStarted = VISIBLE_STEPS.some(
-    (step) => stepChipState(state, step, slots) !== "pending"
+  const anyStepStarted = visibleSteps.some(
+    (step) => stepChipState(state, step, slots, pipeline) !== "pending"
   );
 
   return (
@@ -36,12 +43,12 @@ export function PhaseIndicator({ state }: PhaseIndicatorProps) {
       >
         Phase 2:
       </span>
-      {VISIBLE_STEPS.map((step, i) => {
-        const chip = stepChipState(state, step, slots);
+      {visibleSteps.map((step, i) => {
+        const chip = stepChipState(state, step, slots, pipeline);
         return (
           <span key={String(step.id)} className="contents">
-            <SubChip state={chip} label={shortLabel(step)} />
-            {i < VISIBLE_STEPS.length - 1 && (
+            <SubChip state={chip} label={shortLabel(step, pipeline)} />
+            {i < visibleSteps.length - 1 && (
               <span className="text-neutral-700">›</span>
             )}
           </span>
@@ -54,20 +61,19 @@ export function PhaseIndicator({ state }: PhaseIndicatorProps) {
   );
 }
 
-function shortLabel(step: StepConfig): string {
-  // The chip strip uses short labels (e.g., "Workflows" not "Workflow Map").
-  // Use the phase label for now — short enough to fit in a chip.
-  // Falls back to the step label.
-  if (step.label === "Workflow Map") return "Workflows";
-  if (step.label === "Screen Inventory") return "Screens";
-  if (step.label === "Wireframe HTML") return "Wireframe";
+function shortLabel(step: StepConfig, pipeline: PipelineConfig): string {
+  if (pipeline.id === "prd-builder.v1") {
+    const id = String(step.id);
+    if (PRD_SHORT_LABELS[id]) return PRD_SHORT_LABELS[id];
+  }
   return step.label;
 }
 
 function stepChipState(
   state: SessionLifecycle,
   step: StepConfig,
-  slots: Record<string, { finalized: boolean }>
+  slots: Record<string, { finalized: boolean }>,
+  pipeline: PipelineConfig
 ): ChipState {
   // Running on this exact step (or a hidden auto-step that produces the
   // same phase as this step — e.g., wireframeData running maps to the
@@ -76,7 +82,7 @@ function stepChipState(
     if (state.stepId === step.id) return "active";
     // If state.stepId is a hidden auto-step in this step's phase, we're
     // effectively running this phase too.
-    const runningStep = CONFIG.steps.find((s) => s.id === state.stepId);
+    const runningStep = pipeline.steps.find((s) => s.id === state.stepId);
     if (runningStep && runningStep.gate === "auto" && runningStep.phase === step.phase) {
       return "active";
     }

@@ -1,18 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CascadePreviewBanner } from "./CascadePreviewBanner";
 import { DriftBanner } from "./DriftBanner";
 import { rollbackToPhase1, sendChatMessage } from "@/hooks/useSSE";
-import { PRD_PIPELINE } from "@/lib/pipeline/configs/prd-builder";
-import type { StepConfig } from "@/lib/pipeline/types";
+import { tryGetPipeline } from "@/lib/pipeline/configs";
+import type { PipelineConfig, StepConfig } from "@/lib/pipeline/types";
 import { useChatStore } from "@/stores/chat";
 import { useSessionStore } from "@/stores/session";
-
-const CONFIG = PRD_PIPELINE;
-const STEP_INDEX: ReadonlyMap<string, StepConfig> = new Map(
-  CONFIG.steps.map((s) => [String(s.id), s] as const)
-);
 
 export function ChatPanel() {
   const messages = useChatStore((s) => s.messages);
@@ -30,6 +25,21 @@ export function ChatPanel() {
       behavior: "smooth",
     });
   }, [messages.length, pendingAssistant.length, streaming, drift]);
+
+  const draftPipelineId = useSessionStore((s) => s.draftPipelineId);
+  // Use the active session's pipeline if there is one; otherwise fall back
+  // to the user's draft selection from the picker so the placeholder text
+  // and review-step labels reflect the chosen pipeline before the first
+  // message is sent.
+  const pipeline =
+    tryGetPipeline(current?.pipelineId) ?? tryGetPipeline(draftPipelineId);
+  const stepIndex: ReadonlyMap<string, StepConfig> = useMemo(
+    () =>
+      new Map(
+        (pipeline?.steps ?? []).map((s) => [String(s.id), s] as const)
+      ),
+    [pipeline]
+  );
 
   const state = current?.state;
   const blocked = drift?.classification === "DRIFT";
@@ -76,6 +86,8 @@ export function ChatPanel() {
 
   const showPlaceholder = messages.length === 0 && !streaming && !pendingAssistant;
   const showThinking = streaming && !pendingAssistant;
+  const initialPrompt =
+    pipeline?.ui?.initialChatPlaceholder ?? "Type a one-line product idea";
   const placeholder = previewPending
     ? "Confirm or cancel the pending change above to continue."
     : computePlaceholder({
@@ -83,6 +95,8 @@ export function ChatPanel() {
         isComplete,
         state,
         hasSession: Boolean(current),
+        pipeline,
+        stepIndex,
       });
 
   return (
@@ -90,7 +104,7 @@ export function ChatPanel() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
         {showPlaceholder ? (
           <div className="text-sm text-neutral-500">
-            Type a one-line product idea below to draft a Project Contract.
+            {initialPrompt}
           </div>
         ) : (
           <ul className="flex flex-col gap-3">
@@ -165,18 +179,22 @@ function computePlaceholder(args: {
   isComplete: boolean;
   state: import("@/lib/pipeline/state").SessionLifecycle | undefined;
   hasSession: boolean;
+  pipeline: PipelineConfig | null;
+  stepIndex: ReadonlyMap<string, StepConfig>;
 }): string {
   if (args.blocked) {
     return "Change blocked. Roll back to Phase 1 to continue editing.";
   }
   if (args.isComplete) {
-    return "Pipeline locked. Request a change to iterate, or roll back to Phase 1 to revise the contract.";
+    return "Pipeline locked. Request a change to iterate, or roll back to Phase 1 to revise the input.";
   }
   if (!args.hasSession) {
-    return CONFIG.ui?.initialChatPlaceholder ?? "Type a one-line product idea";
+    return (
+      args.pipeline?.ui?.initialChatPlaceholder ?? "Type a one-line product idea"
+    );
   }
   if (args.state?.kind === "review") {
-    const step = STEP_INDEX.get(String(args.state.stepId));
+    const step = args.stepIndex.get(String(args.state.stepId));
     if (step?.reviewPlaceholder) return step.reviewPlaceholder;
   }
   return "Ask a question or request an edit...";

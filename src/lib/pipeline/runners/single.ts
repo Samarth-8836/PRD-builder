@@ -8,6 +8,7 @@
 
 import { execute } from "@/lib/operations/executor";
 import { getPrompt } from "@/lib/prompts";
+import type { ModelRole } from "@/lib/llm/config";
 import { makeMarkdown } from "@/lib/pipeline/slots";
 import type {
   SingleRunner,
@@ -21,13 +22,15 @@ export interface SingleRunArgs {
   signal?: AbortSignal;
   onDelta?: (delta: string) => void;
   onRetry?: (reason: string, attempt: number) => void;
+  /** Pipeline-step's modelRole (forwarded from engine.runStep). */
+  role?: ModelRole;
 }
 
 /** Run a single-prompt step. Returns slot payloads keyed by produces id. */
 export async function runSingle(
   args: SingleRunArgs
 ): Promise<Record<string, SlotPayload>> {
-  const { runner, ctx, signal, onDelta, onRetry } = args;
+  const { runner, ctx, signal, onDelta, onRetry, role } = args;
   const prompt = getPrompt(runner.prompt);
   const fewShot = prompt.fewShot ?? [];
 
@@ -47,6 +50,7 @@ export async function runSingle(
     parser: runner.parser,
     correctiveHint: prompt.correctiveHint,
     signal,
+    role,
     maxAttempts: runner.maxAttempts ?? 2,
     onDelta: onDelta ? (delta) => onDelta(delta) : undefined,
     onRetry,

@@ -1,9 +1,7 @@
 "use client";
 
-import {
-  PRD_PIPELINE,
-  PRD_STEP_IDS,
-} from "@/lib/pipeline/configs/prd-builder";
+import { tryGetPipeline } from "@/lib/pipeline/configs";
+import type { PipelineConfig } from "@/lib/pipeline/types";
 import type { SessionLifecycle } from "@/lib/pipeline/state";
 import type { StreamEvent } from "@/lib/streaming";
 import { useChatStore } from "@/stores/chat";
@@ -16,20 +14,31 @@ import { useSessionStore } from "@/stores/session";
  *  approve gate (especially after a restore-from-suspended, where every
  *  slot's `setSlot` would otherwise leave the tab pinned to whichever
  *  slot was set last). */
-const STEP_TAB_SLOT: Record<string, string> = Object.fromEntries(
-  PRD_PIPELINE.steps.map((s) => [String(s.id), String(s.produces[0])] as const)
-);
+function stepTabSlotMap(
+  pipeline: PipelineConfig
+): Record<string, string> {
+  return Object.fromEntries(
+    pipeline.steps.map((s) => [String(s.id), String(s.produces[0])] as const)
+  );
+}
 
 /** Switch the active tab to match the lifecycle state, when the tab's
  *  slot is finalized on the client. No-op if the slot isn't ready or
  *  the lifecycle doesn't map to a tab (phase1 / phase1_complete / running). */
-function syncActiveTabToState(state: SessionLifecycle): void {
+function syncActiveTabToState(
+  state: SessionLifecycle,
+  pipelineId: string
+): void {
+  const pipeline = tryGetPipeline(pipelineId);
+  if (!pipeline) return;
+  const tabMap = stepTabSlotMap(pipeline);
   let slotId: string | undefined;
   if (state.kind === "review") {
-    slotId = STEP_TAB_SLOT[String(state.stepId)];
+    slotId = tabMap[String(state.stepId)];
   } else if (state.kind === "complete") {
-    // At complete, show the final artifact.
-    slotId = STEP_TAB_SLOT[String(PRD_STEP_IDS.wireframeHtml)];
+    // At complete, show the final artifact (last step in topo order).
+    const lastStep = pipeline.steps[pipeline.steps.length - 1];
+    if (lastStep) slotId = tabMap[String(lastStep.id)];
   }
   if (!slotId) return;
   const doc = useDocumentStore.getState();
@@ -61,11 +70,21 @@ export async function sendChatMessage(input: SendMessageInput): Promise<void> {
   chat.setPendingAssistant("");
   chat.setStreaming(true);
 
+  // For the first message of a new session, forward the user-chosen
+  // pipelineId from the picker. The server creates the session with
+  // that pipeline. After meta arrives, `current.pipelineId` is the
+  // canonical source — the draft is cleared.
+  const draftPipelineId = !input.sessionId ? session.draftPipelineId : null;
+
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: input.message, sessionId: input.sessionId }),
+      body: JSON.stringify({
+        message: input.message,
+        sessionId: input.sessionId,
+        pipelineId: draftPipelineId,
+      }),
     });
 
     if (!response.ok || !response.body) {
@@ -74,6 +93,12 @@ export async function sendChatMessage(input: SendMessageInput): Promise<void> {
     }
 
     await consumeSSE(response.body, dispatch);
+    // Clear the draft pipelineId once the session is created — the
+    // server's meta event set current.pipelineId, which is the
+    // authoritative source going forward.
+    if (draftPipelineId) {
+      useSessionStore.getState().setDraftPipelineId(null);
+    }
   } finally {
     useChatStore.getState().finalizePending();
     useChatStore.getState().setStreaming(false);
@@ -248,14 +273,16 @@ function dispatch(event: StreamEvent): void {
         title: event.title,
         state: event.state,
         pipelineVersion: event.pipelineVersion,
+        pipelineId: event.pipelineId,
       });
       session.upsert({
         id: event.sessionId,
         title: event.title,
         state: event.state,
+        pipelineId: event.pipelineId,
         updatedAt: new Date().toISOString(),
       });
-      syncActiveTabToState(event.state);
+      syncActiveTabToState(event.state, event.pipelineId);
       return;
     case "chunk":
       chat.appendChunk(event.text);
@@ -281,6 +308,7 @@ function dispatch(event: StreamEvent): void {
       return;
     case "state":
       if (session.current) {
+        const currentPipelineId = session.current.pipelineId;
         session.setCurrent({
           ...session.current,
           state: event.state,
@@ -289,15 +317,16 @@ function dispatch(event: StreamEvent): void {
           id: session.current.id,
           title: session.current.title,
           state: event.state,
+          pipelineId: currentPipelineId,
           updatedAt: new Date().toISOString(),
         });
+        // Each lifecycle transition repoints the visible tab to the
+        // step's produced slot. Without this, restore-from-suspended
+        // leaves the tab on the last setSlot target (typically
+        // wireframeFiles), making it look like the user fast-forwarded
+        // when really the lifecycle is at review:workflow.
+        syncActiveTabToState(event.state, currentPipelineId);
       }
-      // Each lifecycle transition repoints the visible tab to the
-      // step's produced slot. Without this, restore-from-suspended
-      // leaves the tab on the last setSlot target (typically
-      // wireframeFiles), making it look like the user fast-forwarded
-      // when really the lifecycle is at review:workflow.
-      syncActiveTabToState(event.state);
       return;
     case "validation_result": {
       const text = formatValidationResult(event);
@@ -360,6 +389,7 @@ export async function loadSession(id: string): Promise<void> {
     title: s.title,
     state: s.state,
     pipelineVersion: s.pipelineVersion ?? 1,
+    pipelineId: s.pipelineId,
   });
   useSessionStore.getState().setDrift(null);
   useSessionStore.getState().setPendingPreview(null);
@@ -371,16 +401,19 @@ export async function loadSession(id: string): Promise<void> {
     doc.setSlot(slotId, payload);
   }
   // Tab follows lifecycle on session load: pick the slot relevant to
-  // the current state (review:X -> X's slot, complete -> wireframe).
+  // the current state (review:X -> X's slot, complete -> last-step slot).
   // Falls back to the drift anchor for phase1 / phase1_complete /
   // running states where there's no obvious "current" tab.
-  syncActiveTabToState(s.state);
+  syncActiveTabToState(s.state, s.pipelineId);
   if (
     s.state.kind === "phase1" ||
     s.state.kind === "phase1_complete" ||
     s.state.kind === "running"
   ) {
-    const anchor = Object.keys(s.slots)[0];
+    const pipeline = tryGetPipeline(s.pipelineId);
+    const anchor =
+      (pipeline ? String(pipeline.driftAnchor) : Object.keys(s.slots)[0]) ??
+      Object.keys(s.slots)[0];
     if (anchor) doc.setActiveTab(anchor);
   }
 }

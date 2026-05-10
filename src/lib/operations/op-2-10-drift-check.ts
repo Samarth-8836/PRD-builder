@@ -1,4 +1,4 @@
-import { getPrompt } from "@/lib/prompts";
+import { getPrompt, type PromptSlug } from "@/lib/prompts";
 import { parseDriftCheck, type DriftResult } from "@/lib/parsers";
 import { execute } from "./executor";
 
@@ -6,15 +6,19 @@ interface RunInput {
   contract: string;
   changeDescription: string;
   signal?: AbortSignal;
+  /** Pipeline-specific drift prompt. Defaults to PRD's
+   *  "phase2.drift_check" so legacy callers don't need to pass anything. */
+  promptSlug?: PromptSlug;
 }
 
 /**
  * op-2-10: drift checker. Independent LLM call that decides whether the
  * requested change can be implemented without modifying the locked
- * Project Contract. Returns COMPATIBLE / FLAG / DRIFT plus a reason.
+ * drift anchor (Project Contract for PRD; Research Brief for
+ * research-report). Returns COMPATIBLE / FLAG / DRIFT plus a reason.
  */
 export async function runDriftCheck(input: RunInput): Promise<DriftResult> {
-  const prompt = getPrompt("phase2.drift_check");
+  const prompt = getPrompt(input.promptSlug ?? "phase2.drift_check");
   const fewShot = prompt.fewShot ?? [];
 
   const messages = [

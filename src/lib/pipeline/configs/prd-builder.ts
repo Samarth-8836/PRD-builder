@@ -53,7 +53,6 @@ import {
   makeFileset,
   makeJson,
   makeMarkdown,
-  requireFileset,
   requireJson,
   requireMarkdown,
 } from "@/lib/pipeline/slots";
@@ -247,6 +246,37 @@ export const PRD_PIPELINE: PipelineConfig = {
     parser: classifyReviewChat,
     driftPrompt: "phase2.drift_check",
     driftParser: parseDriftCheck,
+    buildSystemContext: (slots) => {
+      const contract =
+        getMarkdownContent(slots, SLOT_PROJECT_CONTRACT) ?? "";
+      const workflowMap =
+        getMarkdownContent(slots, SLOT_WORKFLOW_MAP) ?? "";
+      const screenInventory =
+        getMarkdownContent(slots, SLOT_SCREEN_INVENTORY) ?? "";
+
+      let block = `\n\n<project_contract>
+${contract.trim()}
+</project_contract>
+
+<workflow_map>
+${workflowMap.trim()}
+</workflow_map>
+
+<screen_inventory>
+${screenInventory.trim()}
+</screen_inventory>`;
+
+      const wireframe = slots[SLOT_WIREFRAME_FILES];
+      if (wireframe && wireframe.kind === "fileset") {
+        const screenIds = Object.keys(wireframe.files)
+          .filter((f) => f.endsWith(".html") && f !== "index.html")
+          .map((f) => f.replace(/\.html$/, ""));
+        block += `\n\n<wireframe_state>
+A clickable wireframe has been generated (version ${wireframe.version}). Screen ids with rendered HTML files: ${screenIds.join(", ")}.
+</wireframe_state>`;
+      }
+      return block;
+    },
   },
   steps: [
     // -------------------------------------------------------------------

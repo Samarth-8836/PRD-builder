@@ -200,12 +200,15 @@ export class PipelineEngine {
       "./runners/index.ts"
     );
 
+    const role = step.modelRole;
+
     let raw: Record<string, SlotPayload>;
     if (step.runner.kind === "single") {
       raw = await runSingle({
         runner: step.runner,
         ctx,
         signal: args.signal,
+        role,
         onDelta: args.onDelta,
         onRetry: args.onRetry,
       });
@@ -214,6 +217,7 @@ export class PipelineEngine {
         runner: step.runner,
         ctx,
         signal: args.signal,
+        role,
         onProgress: (itemId, status, note) =>
           args.onProgress?.({
             kind: "fanout_item",
@@ -230,6 +234,7 @@ export class PipelineEngine {
         runner: step.runner,
         ctx,
         signal: args.signal,
+        role,
         onSubstep: (substepId, status, note) =>
           args.onProgress?.({
             kind: "substep",

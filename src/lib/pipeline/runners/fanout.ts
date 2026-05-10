@@ -7,6 +7,7 @@
 import { executeDAG } from "@/lib/dag";
 import { execute } from "@/lib/operations/executor";
 import { getPrompt } from "@/lib/prompts";
+import type { ModelRole } from "@/lib/llm/config";
 import type {
   FanoutRunner,
   SlotPayload,
@@ -28,12 +29,14 @@ export interface FanoutRunArgs {
   /** Prior parsed results keyed by itemId, used when `onlyItemId` is set
    *  so unchanged items are preserved without re-running. */
   priorResults?: Record<string, unknown>;
+  /** Pipeline-step's modelRole (forwarded from engine.runStep). */
+  role?: ModelRole;
 }
 
 export async function runFanout(
   args: FanoutRunArgs
 ): Promise<Record<string, SlotPayload>> {
-  const { runner, ctx, signal, onProgress, onlyItemId, priorResults } = args;
+  const { runner, ctx, signal, onProgress, onlyItemId, priorResults, role } = args;
   const prompt = getPrompt(runner.prompt);
   const fewShot = prompt.fewShot ?? [];
 
@@ -67,6 +70,7 @@ export async function runFanout(
             parser: runner.parser,
             correctiveHint: prompt.correctiveHint,
             signal,
+            role,
             maxAttempts: runner.maxAttempts ?? 2,
           });
           onProgress?.(id, "completed");

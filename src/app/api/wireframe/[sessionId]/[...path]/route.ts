@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { PRD_SLOT_IDS } from "@/lib/pipeline/configs/prd-builder";
+import { getPipeline } from "@/lib/pipeline/configs";
 import { getStorage } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -36,7 +36,17 @@ export async function GET(_req: NextRequest, ctx: RouteParams) {
   if (!session) {
     return new Response("Session not found", { status: 404 });
   }
-  const slot = session.slots[PRD_SLOT_IDS.wireframeFiles];
+  const pipeline = getPipeline(session.pipelineId);
+  // Find the first fileset slot in the pipeline. PRD has wireframeFiles;
+  // pipelines without a fileset slot can't serve through this route.
+  const filesetSlot = pipeline.slots.find((s) => s.kind === "fileset");
+  if (!filesetSlot) {
+    return new Response(
+      `Pipeline ${pipeline.id} has no fileset artifact to serve`,
+      { status: 404 }
+    );
+  }
+  const slot = session.slots[String(filesetSlot.id)];
   if (!slot || slot.kind !== "fileset") {
     return new Response("Wireframe not generated yet", { status: 404 });
   }

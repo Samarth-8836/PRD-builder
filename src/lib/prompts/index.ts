@@ -61,6 +61,28 @@ import {
   SUMMARIZE_DIFF_SUMMARY_CORRECTIVE_HINT,
   SUMMARIZE_DIFF_SUMMARY_SYSTEM,
 } from "./summarize";
+import {
+  DRIFT_CHECK_CORRECTIVE_HINT as RR_DRIFT_CHECK_CORRECTIVE_HINT,
+  DRIFT_CHECK_EXAMPLE_ASSISTANT as RR_DRIFT_CHECK_EXAMPLE_ASSISTANT,
+  DRIFT_CHECK_EXAMPLE_USER as RR_DRIFT_CHECK_EXAMPLE_USER,
+  DRIFT_CHECK_SYSTEM as RR_DRIFT_CHECK_SYSTEM,
+  EDIT_CORRECTIVE_HINT,
+  EDIT_SYSTEM,
+  OUTLINE_CORRECTIVE_HINT,
+  OUTLINE_SYSTEM,
+  REVIEW_CHAT_CORRECTIVE_HINT,
+  REVIEW_CHAT_EXAMPLE_EDIT_CHANGE_ASSISTANT,
+  REVIEW_CHAT_EXAMPLE_EDIT_CHANGE_USER,
+  REVIEW_CHAT_EXAMPLE_OUTLINE_CHANGE_ASSISTANT,
+  REVIEW_CHAT_EXAMPLE_OUTLINE_CHANGE_USER,
+  REVIEW_CHAT_EXAMPLE_QUESTION_ASSISTANT,
+  REVIEW_CHAT_EXAMPLE_QUESTION_USER,
+  REVIEW_CHAT_EXAMPLE_SECTION_CHANGE_ASSISTANT,
+  REVIEW_CHAT_EXAMPLE_SECTION_CHANGE_USER,
+  REVIEW_CHAT_SYSTEM,
+  SECTION_DRAFT_CORRECTIVE_HINT,
+  SECTION_DRAFT_SYSTEM,
+} from "./research-report";
 
 export type PromptSlug =
   | "phase1.first_message"
@@ -79,7 +101,12 @@ export type PromptSlug =
   | "phase2.screen_html"
   | "summarize.chat_window"
   | "summarize.changelog_window"
-  | "summarize.diff_summary";
+  | "summarize.diff_summary"
+  | "research_report.outline"
+  | "research_report.section_draft"
+  | "research_report.edit"
+  | "research_report.review_chat"
+  | "research_report.drift_check";
 
 export interface PromptSpec {
   system: string;
@@ -208,6 +235,50 @@ const REGISTRY: Record<PromptSlug, PromptSpec> = {
   "summarize.diff_summary": {
     system: SUMMARIZE_DIFF_SUMMARY_SYSTEM,
     correctiveHint: SUMMARIZE_DIFF_SUMMARY_CORRECTIVE_HINT,
+  },
+  "research_report.outline": {
+    system: OUTLINE_SYSTEM,
+    correctiveHint: OUTLINE_CORRECTIVE_HINT,
+  },
+  "research_report.section_draft": {
+    system: SECTION_DRAFT_SYSTEM,
+    correctiveHint: SECTION_DRAFT_CORRECTIVE_HINT,
+  },
+  "research_report.edit": {
+    system: EDIT_SYSTEM,
+    correctiveHint: EDIT_CORRECTIVE_HINT,
+  },
+  "research_report.review_chat": {
+    system: REVIEW_CHAT_SYSTEM,
+    fewShot: [
+      {
+        user: REVIEW_CHAT_EXAMPLE_QUESTION_USER,
+        assistant: REVIEW_CHAT_EXAMPLE_QUESTION_ASSISTANT,
+      },
+      {
+        user: REVIEW_CHAT_EXAMPLE_OUTLINE_CHANGE_USER,
+        assistant: REVIEW_CHAT_EXAMPLE_OUTLINE_CHANGE_ASSISTANT,
+      },
+      {
+        user: REVIEW_CHAT_EXAMPLE_SECTION_CHANGE_USER,
+        assistant: REVIEW_CHAT_EXAMPLE_SECTION_CHANGE_ASSISTANT,
+      },
+      {
+        user: REVIEW_CHAT_EXAMPLE_EDIT_CHANGE_USER,
+        assistant: REVIEW_CHAT_EXAMPLE_EDIT_CHANGE_ASSISTANT,
+      },
+    ],
+    correctiveHint: REVIEW_CHAT_CORRECTIVE_HINT,
+  },
+  "research_report.drift_check": {
+    system: RR_DRIFT_CHECK_SYSTEM,
+    fewShot: [
+      {
+        user: RR_DRIFT_CHECK_EXAMPLE_USER,
+        assistant: RR_DRIFT_CHECK_EXAMPLE_ASSISTANT,
+      },
+    ],
+    correctiveHint: RR_DRIFT_CHECK_CORRECTIVE_HINT,
   },
 };
 

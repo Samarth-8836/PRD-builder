@@ -12,6 +12,10 @@ export const dynamic = "force-dynamic";
 interface ChatRequestBody {
   sessionId?: string;
   message?: string;
+  /** For first-message session creation: the user's pipeline picker
+   *  selection. Ignored when `sessionId` is set (the existing session's
+   *  pipelineId is authoritative). */
+  pipelineId?: string;
 }
 
 export async function POST(req: NextRequest) {
@@ -34,6 +38,7 @@ export async function POST(req: NextRequest) {
       if (!body.sessionId) {
         await manager.startSession({
           firstMessage: message,
+          pipelineId: body.pipelineId,
           sse,
           signal: req.signal,
         });

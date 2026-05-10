@@ -7,6 +7,7 @@
 import { executeDAG } from "@/lib/dag";
 import { execute } from "@/lib/operations/executor";
 import { getPrompt } from "@/lib/prompts";
+import type { ModelRole } from "@/lib/llm/config";
 import type {
   ComposeRunner,
   ComposeSubstep,
@@ -29,12 +30,14 @@ export interface ComposeRunArgs {
     status: "started" | "completed" | "failed",
     note?: string
   ) => void;
+  /** Pipeline-step's modelRole (forwarded from engine.runStep). */
+  role?: ModelRole;
 }
 
 export async function runCompose(
   args: ComposeRunArgs
 ): Promise<Record<string, SlotPayload>> {
-  const { runner, ctx, signal, onSubstep, onFanoutItem } = args;
+  const { runner, ctx, signal, onSubstep, onFanoutItem, role } = args;
   const subResults: Record<string, unknown> = { ...(ctx.subResults ?? {}) };
 
   for (const substep of runner.substeps) {
@@ -46,6 +49,7 @@ export async function runCompose(
     try {
       const value = await runSubstep(substep, ctx, subResults, {
         signal,
+        role,
         onFanoutItem: (itemId, status, note) =>
           onFanoutItem?.(substep.id, itemId, status, note),
       });
@@ -67,6 +71,7 @@ async function runSubstep(
   subResults: Record<string, unknown>,
   opts: {
     signal?: AbortSignal;
+    role?: ModelRole;
     onFanoutItem?: (
       itemId: string,
       status: "started" | "completed" | "failed",
@@ -91,6 +96,7 @@ async function runSubstep(
       parser: substep.parser,
       correctiveHint: prompt.correctiveHint,
       signal: opts.signal,
+      role: opts.role,
       maxAttempts: substep.maxAttempts ?? 2,
     });
     return value;
